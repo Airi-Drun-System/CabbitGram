@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['cabbitgram.patch', '.github/workflows/build.yml']
+    paths: ['cabbitgram.patch', '.github/workflows/build.yml', 'CHANGES.md']
 
 permissions:
   contents: write
@@ -49,10 +49,18 @@ jobs:
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;27.2.12479018" "cmake;3.22.1" "platforms;android-36" "build-tools;36.0.0" > /dev/null
           echo "sdk.dir=$ANDROID_HOME" > tg/local.properties
 
+      - name: Ключ подписи CabbitGram
+        env:
+          KS: ${{ secrets.CABBIT_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS" ]; then echo "$KS" | base64 -d > $RUNNER_TEMP/cabbitgram.jks && echo "CABBIT_KEYSTORE_FILE=$RUNNER_TEMP/cabbitgram.jks" >> $GITHUB_ENV && echo "Подпись своим ключом"
+          else echo "::warning::Секрет CABBIT_KEYSTORE_B64 не задан — подпись тестовым ключом Telegram"; fi
+
       - name: Сборка APK
         env:
           CABBIT_API_ID: ${{ secrets.CABBIT_API_ID }}
           CABBIT_API_HASH: ${{ secrets.CABBIT_API_HASH }}
+          CABBIT_KEYSTORE_PASS: ${{ secrets.CABBIT_KEYSTORE_PASS }}
         run: |
           cd tg && chmod +x gradlew
           ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon --stacktrace
@@ -66,5 +74,5 @@ jobs:
         with:
           tag_name: build-${{ github.run_number }}
           name: CabbitGram (сборка ${{ github.run_number }})
-          body: Сборка из официального Telegram 13.2.2 + патч CabbitGram. Только для arm64 (почти все современные телефоны).
+          body_path: cg/CHANGES.md
           files: CabbitGram.apk
