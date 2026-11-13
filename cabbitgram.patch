@@ -131,7 +131,7 @@ index ca82181..a22448c 100644
      public static boolean SUPPORTS_FPNV = true;
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/CabbitBadges.java b/TMessagesProj/src/main/java/org/telegram/messenger/CabbitBadges.java
 new file mode 100644
-index 0000000..20dc0f7
+index 0000000..75772d8
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/CabbitBadges.java
 @@ -0,0 +1,187 @@
@@ -160,11 +160,11 @@ index 0000000..20dc0f7
 +import java.util.HashMap;
 +
 +// CabbitGram: значки у ника. Список лежит в репозитории (badges.json), видят его только пользователи CabbitGram.
-+// Формат: {"dev":[id],"admin":[id],"supporter":[id]}. Выдаёт админ из профиля человека (нужен GitHub-токен, вводится в настройках).
++// Формат: {"dev":[id],"admin":[id],"idea":[id],"supporter":[id]}. Выдаёт админ из профиля человека (нужен GitHub-токен, вводится в настройках).
 +public final class CabbitBadges {
 +
-+    public static final int NONE = 0, DEV = 1, ADMIN = 2, SUPPORTER = 3;
-+    private static final String[] KEYS = {null, "dev", "admin", "supporter"};   // порядок = приоритет
++    public static final int NONE = 0, DEV = 1, ADMIN = 2, IDEA = 3, SUPPORTER = 4;
++    private static final String[] KEYS = {null, "dev", "admin", "idea", "supporter"};   // порядок = приоритет
 +    private static final String PUBLIC_URL = "https://airi-drun-system.github.io/CabbitGram/badges.json";
 +    private static final String API_URL = "https://api.github.com/repos/Airi-Drun-System/CabbitGram/contents/badges.json";
 +    private static final long REFRESH_EVERY = 60 * 60 * 1000L;
@@ -193,7 +193,7 @@ index 0000000..20dc0f7
 +        if (name == null || userId <= 0) return name;
 +        int b = get(userId);
 +        if (b == NONE) return name;
-+        Drawable d = ContextCompat.getDrawable(ApplicationLoader.applicationContext, b == DEV ? R.drawable.cabbit_badge_dev : b == ADMIN ? R.drawable.cabbit_badge_admin : R.drawable.cabbit_badge_sup);
++        Drawable d = ContextCompat.getDrawable(ApplicationLoader.applicationContext, b == DEV ? R.drawable.cabbit_badge_dev : b == ADMIN ? R.drawable.cabbit_badge_admin : b == IDEA ? R.drawable.cabbit_badge_idea : R.drawable.cabbit_badge_sup);
 +        if (d == null) return name;
 +        ColoredImageSpan span = new ColoredImageSpan(d.mutate(), ColoredImageSpan.ALIGN_CENTER);
 +        span.recolorDrawable = false;   // значки всегда в своих цветах (глифы белые)
@@ -210,7 +210,7 @@ index 0000000..20dc0f7
 +            for (int t = 1; t < KEYS.length; t++) {
 +                JSONArray a = o.optJSONArray(KEYS[t]);
 +                for (int i = 0; a != null && i < a.length(); i++) {
-+                    if (!m.containsKey(a.getLong(i))) m.put(a.getLong(i), t);   // dev > admin > supporter
++                    if (!m.containsKey(a.getLong(i))) m.put(a.getLong(i), t);   // dev > admin > idea > supporter
 +                }
 +            }
 +        } catch (Exception e) {
@@ -252,8 +252,8 @@ index 0000000..20dc0f7
 +        if (fragment.getParentActivity() == null) return;
 +        new AlertDialog.Builder(fragment.getParentActivity())
 +                .setTitle("Значок CabbitGram")
-+                .setItems(new CharSequence[]{"Разработчик", "Администратор", "Поддержал проект", "Забрать значок"}, (d, which) ->
-+                        set(userId, which < 3 ? which + 1 : NONE, result ->
++                .setItems(new CharSequence[]{"Разработчик", "Администратор", "Автор идей", "Поддержал проект", "Забрать значок"}, (d, which) ->
++                        set(userId, which < 4 ? which + 1 : NONE, result ->
 +                                BulletinFactory.of(fragment).createSimpleBulletin(R.raw.info, result).show()))
 +                .show();
 +    }
@@ -1138,6 +1138,60 @@ z`ciFumn$r)8>sK54(^PmqfUwq&ZytUPJB@7j((M;d<XlZH9t38Cp+}_=$>r!akl|I
 zQC}xmCp+}J3BKLAp#$K32;nr<g1HLnFof{8&Wo?RV<Cjvqhq6)vrTB_gx|*sG<5}<
 zx&lpIfu^oNQ&*s=E6~&xXzB_ybxoninXa9wDRev2wP{m_o;__liamgE{E1wH{sFQg
 Vq)S%=Flqn*002ovPDHLkV1mm%*hK&U
+
+literal 0
+HcmV?d00001
+
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/cabbit_badge_idea.png b/TMessagesProj/src/main/res/drawable-nodpi/cabbit_badge_idea.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..4d031772d15b31dbd351f9535a50f5adab14c061
+GIT binary patch
+literal 2326
+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
 
 literal 0
 HcmV?d00001
