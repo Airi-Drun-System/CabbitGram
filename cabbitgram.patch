@@ -713,10 +713,10 @@ index 3a5413c..0c26247 100644
              return "LOC_ERR:" + key;
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/CabbitSettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/CabbitSettingsActivity.java
 new file mode 100644
-index 0000000..7e53d5b
+index 0000000..2449c3a
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/CabbitSettingsActivity.java
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,178 @@
 +package org.telegram.ui;
 +
 +import android.text.InputType;
@@ -759,9 +759,8 @@ index 0000000..7e53d5b
 +    @Override
 +    protected void fillItems(ArrayList<UItem> items, UniversalAdapter adapter) {
 +        items.add(UItem.asHeader("Плавность"));
-+        final int hz = Math.round(CabbitConfig.maxRefreshRate(getParentActivity()));
-+        items.add(UItem.asCheck(ID_REFRESH, "Максимальная частота экрана (" + hz + " Гц)").setChecked(CabbitConfig.highRefresh()));
-+        items.add(UItem.asShadow("Прокрутка и анимации всегда на максимальной частоте экрана. Батарея садится чуть быстрее."));
++        items.add(UItem.asCheck(ID_REFRESH, "Высокая частота обновления экрана").setChecked(CabbitConfig.highRefresh()));
++        items.add(UItem.asShadow("Повышает плавность интерфейса, но увеличивает расход батареи."));
 +
 +        items.add(UItem.asHeader("Прокси"));
 +        items.add(UItem.asButton(ID_PROXY, proxyBusy ? "Ищу самый быстрый…" : "Подключить лучший прокси", proxyStatus != null ? proxyStatus : (SharedConfig.isProxyEnabled() ? "включён" : "")).accent());
@@ -769,7 +768,7 @@ index 0000000..7e53d5b
 +        if (SharedConfig.isProxyEnabled()) {
 +            items.add(UItem.asButton(ID_PROXY_OFF, "Отключить прокси").red());
 +        }
-+        items.add(UItem.asShadow("Список прокси обновляется с сервера CabbitGram, пересобирать приложение не нужно."));
++        items.add(UItem.asShadow("Список прокси обновляется автоматически."));
 +
 +        items.add(UItem.asHeader("Внешний вид"));
 +        items.add(UItem.asCheck(ID_HIDE_MONEY, "Скрыть Premium, звёзды и подарки в настройках").setChecked(CabbitConfig.hideMonetization()));
@@ -778,7 +777,7 @@ index 0000000..7e53d5b
 +        if (android.os.Build.VERSION.SDK_INT >= 28) {
 +            items.add(UItem.asCheck(ID_SYS_FONT, "Жирный шрифт телефона вместо Roboto").setChecked(SharedConfig.useSystemBoldFont));
 +        }
-+        items.add(UItem.asShadow("Скрытый номер удобен для скриншотов и стримов. Шрифт применится после перезапуска."));
++        items.add(UItem.asShadow("Изменение шрифта применится после перезапуска."));
 +
 +        items.add(UItem.asHeader("Обновления"));
 +        items.add(UItem.asCheck(ID_AUTO_UPDATE, "Проверять при запуске").setChecked(CabbitUpdater.autoCheck()));
@@ -789,11 +788,11 @@ index 0000000..7e53d5b
 +        if (CabbitBadges.isAdmin()) {
 +            items.add(UItem.asButton(ID_SELF_BADGE, "Выдать значок себе"));
 +            items.add(UItem.asButton(ID_ADMIN_OFF, "Выйти из режима админа").red());
-+            items.add(UItem.asShadow("Режим админа включён: в профиле любого человека в меню ⋮ есть «Значок CabbitGram»."));
++            items.add(UItem.asShadow("Выдача значков доступна в меню профиля."));
 +        } else {
-+            items.add(UItem.asShadow("Значки видят только пользователи CabbitGram. Их выдаёт разработчик."));
++            items.add(UItem.asShadow("Значки видны только пользователям CabbitGram."));
 +        }
-+        items.add(UItem.asShadow("CabbitGram " + BuildVars.BUILD_VERSION_STRING + " · сборка " + BuildConfig.CABBIT_BUILD + " · неофициальный клиент на основе Telegram от VegasDev"));
++        items.add(UItem.asShadow("CabbitGram " + BuildVars.BUILD_VERSION_STRING + " · сборка " + BuildConfig.CABBIT_BUILD + " · VegasDev"));
 +    }
 +
 +    private void toggle(View view, boolean value) {
