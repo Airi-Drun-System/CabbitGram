@@ -131,10 +131,10 @@ index ca82181..a22448c 100644
      public static boolean SUPPORTS_FPNV = true;
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/CabbitBadges.java b/TMessagesProj/src/main/java/org/telegram/messenger/CabbitBadges.java
 new file mode 100644
-index 0000000..75772d8
+index 0000000..6d1cdf8
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/CabbitBadges.java
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,253 @@
 +package org.telegram.messenger;
 +
 +import android.app.Activity;
@@ -160,7 +160,7 @@ index 0000000..75772d8
 +import java.util.HashMap;
 +
 +// CabbitGram: значки у ника. Список лежит в репозитории (badges.json), видят его только пользователи CabbitGram.
-+// Формат: {"dev":[id],"admin":[id],"idea":[id],"supporter":[id]}. Выдаёт админ из профиля человека (нужен GitHub-токен, вводится в настройках).
++// Формат: {"dev":[id],"admin":[id],"idea":[id],"supporter":[id],"titles":{"id":"текст"}}. Выдаёт админ из профиля человека (нужен GitHub-токен, вводится в настройках).
 +public final class CabbitBadges {
 +
 +    public static final int NONE = 0, DEV = 1, ADMIN = 2, IDEA = 3, SUPPORTER = 4;
@@ -169,7 +169,10 @@ index 0000000..75772d8
 +    private static final String API_URL = "https://api.github.com/repos/Airi-Drun-System/CabbitGram/contents/badges.json";
 +    private static final long REFRESH_EVERY = 60 * 60 * 1000L;
 +
++    private static final String[] DEFAULT_TITLES = {null, "Разработчик CabbitGram", "Администратор CabbitGram", "Автор идей CabbitGram", "Поддержал CabbitGram"};
++
 +    private static volatile HashMap<Long, Integer> map;
++    private static volatile HashMap<Long, String> titles = new HashMap<>();
 +    private static long lastFetch;
 +    private static boolean fetching;
 +
@@ -186,6 +189,21 @@ index 0000000..75772d8
 +        refreshIfNeeded();
 +        Integer v = map.get(userId);
 +        return v == null ? NONE : v;
++    }
++
++    /** Титул: свой текст, если задан, иначе стандартный по значку. null — нет ни того, ни другого. */
++    public static String title(long userId) {
++        int b = get(userId);
++        String t = titles.get(userId);
++        if (!TextUtils.isEmpty(t)) return t;
++        return b == NONE ? null : DEFAULT_TITLES[b];
++    }
++
++    /** Строка статуса в профиле + титул через точку. */
++    public static CharSequence withTitle(CharSequence status, long userId) {
++        String t = userId > 0 ? title(userId) : null;
++        if (t == null) return status;
++        return TextUtils.isEmpty(status) ? t : status + " · " + t;
 +    }
 +
 +    /** Имя + значок картинкой в конце. Только для отображения, сам текст имени не меняется. */
@@ -205,8 +223,16 @@ index 0000000..75772d8
 +
 +    private static HashMap<Long, Integer> parse(String json) {
 +        HashMap<Long, Integer> m = new HashMap<>();
++        HashMap<Long, String> tt = new HashMap<>();
 +        try {
 +            JSONObject o = new JSONObject(json);
++            JSONObject to = o.optJSONObject("titles");
++            if (to != null) {
++                for (java.util.Iterator<String> it = to.keys(); it.hasNext(); ) {
++                    String k = it.next();
++                    try { tt.put(Long.parseLong(k), to.getString(k)); } catch (Exception ignore) {}
++                }
++            }
 +            for (int t = 1; t < KEYS.length; t++) {
 +                JSONArray a = o.optJSONArray(KEYS[t]);
 +                for (int i = 0; a != null && i < a.length(); i++) {
@@ -216,6 +242,7 @@ index 0000000..75772d8
 +        } catch (Exception e) {
 +            FileLog.e(e);
 +        }
++        titles = tt;
 +        return m;
 +    }
 +
@@ -252,13 +279,57 @@ index 0000000..75772d8
 +        if (fragment.getParentActivity() == null) return;
 +        new AlertDialog.Builder(fragment.getParentActivity())
 +                .setTitle("Значок CabbitGram")
-+                .setItems(new CharSequence[]{"Разработчик", "Администратор", "Автор идей", "Поддержал проект", "Забрать значок"}, (d, which) ->
-+                        set(userId, which < 4 ? which + 1 : NONE, result ->
-+                                BulletinFactory.of(fragment).createSimpleBulletin(R.raw.info, result).show()))
++                .setItems(new CharSequence[]{"Разработчик", "Администратор", "Автор идей", "Поддержал проект", "Свой титул", "Забрать значок"}, (d, which) -> {
++                    Utilities.Callback<String> done = result -> BulletinFactory.of(fragment).createSimpleBulletin(R.raw.info, result).show();
++                    if (which == 4) showTitleDialog(fragment, userId, done);
++                    else set(userId, which < 4 ? which + 1 : NONE, done);
++                })
 +                .show();
 +    }
 +
++    private static void showTitleDialog(BaseFragment fragment, long userId, Utilities.Callback<String> done) {
++        org.telegram.ui.Components.EditTextBoldCursor et = new org.telegram.ui.Components.EditTextBoldCursor(fragment.getParentActivity());
++        et.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 16);
++        et.setTextColor(org.telegram.ui.ActionBar.Theme.getColor(org.telegram.ui.ActionBar.Theme.key_dialogTextBlack));
++        et.setHintTextColor(org.telegram.ui.ActionBar.Theme.getColor(org.telegram.ui.ActionBar.Theme.key_dialogTextHint));
++        et.setHint("Например: Тестер");
++        et.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(32)});
++        String cur = titles.get(userId);
++        if (cur != null) et.setText(cur);
++        et.setPadding(AndroidUtilities.dp(24), AndroidUtilities.dp(8), AndroidUtilities.dp(24), AndroidUtilities.dp(8));
++        new AlertDialog.Builder(fragment.getParentActivity())
++                .setTitle("Титул")
++                .setMessage("Показывается под ником в профиле. Пусто — стандартный по значку.")
++                .setView(et)
++                .setPositiveButton("Сохранить", (d, w) -> setTitle(userId, et.getText().toString().trim(), done))
++                .setNegativeButton("Отмена", null)
++                .show();
++    }
++
++    public static void setTitle(long userId, String title, Utilities.Callback<String> done) {
++        edit(data -> {
++            JSONObject t = data.optJSONObject("titles");
++            if (t == null) t = new JSONObject();
++            if (TextUtils.isEmpty(title)) t.remove(String.valueOf(userId)); else t.put(String.valueOf(userId), title);
++            data.put("titles", t);
++        }, "Титул для " + userId, TextUtils.isEmpty(title) ? "Титул сброшен" : "Титул сохранён", done);
++    }
++
++    private interface Mutator { void apply(JSONObject data) throws Exception; }
++
 +    public static void set(long userId, int badge, Utilities.Callback<String> done) {
++        edit(data -> {
++            for (int t = 1; t < KEYS.length; t++) {
++                JSONArray a = data.optJSONArray(KEYS[t]), n = new JSONArray();
++                for (int i = 0; a != null && i < a.length(); i++) if (a.getLong(i) != userId) n.put(a.getLong(i));
++                if (t == badge) n.put(userId);
++                data.put(KEYS[t], n);
++            }
++        }, (badge == NONE ? "Забрать значок " : "Значок " + KEYS[badge] + " для ") + userId,
++                badge == NONE ? "Значок забран" : "Значок выдан. У остальных появится в течение часа", done);
++    }
++
++    private static void edit(Mutator mutator, String commitMessage, String okText, Utilities.Callback<String> done) {
 +        final String token = adminToken();
 +        Utilities.globalQueue.postRunnable(() -> {
 +            String result;
@@ -276,15 +347,10 @@ index 0000000..75772d8
 +                } else if (g.getResponseCode() != 404) {
 +                    throw new Exception("GitHub " + g.getResponseCode());
 +                }
-+                for (int t = 1; t < KEYS.length; t++) {
-+                    JSONArray a = data.optJSONArray(KEYS[t]), n = new JSONArray();
-+                    for (int i = 0; a != null && i < a.length(); i++) if (a.getLong(i) != userId) n.put(a.getLong(i));
-+                    if (t == badge) n.put(userId);
-+                    data.put(KEYS[t], n);
-+                }
++                mutator.apply(data);
 +                String json = data.toString(2);
 +                JSONObject body = new JSONObject()
-+                        .put("message", (badge == NONE ? "Забрать значок " : "Значок " + KEYS[badge] + " для ") + userId)
++                        .put("message", commitMessage)
 +                        .put("content", Base64.encodeToString(json.getBytes("UTF-8"), Base64.NO_WRAP));
 +                if (sha != null) body.put("sha", sha);
 +                HttpURLConnection p = CabbitUpdater.open(API_URL);
@@ -297,7 +363,7 @@ index 0000000..75772d8
 +                int code = p.getResponseCode();
 +                if (code == 200 || code == 201) {
 +                    apply(json);
-+                    result = badge == NONE ? "Значок забран" : "Значок выдан. У остальных появится в течение часа";
++                    result = okText;
 +                } else if (code == 401 || code == 403) {
 +                    result = "GitHub не принял токен. Проверь его в настройках CabbitGram";
 +                } else {
@@ -324,10 +390,10 @@ index 0000000..75772d8
 +}
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/CabbitConfig.java b/TMessagesProj/src/main/java/org/telegram/messenger/CabbitConfig.java
 new file mode 100644
-index 0000000..da54e23
+index 0000000..d847c85
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/CabbitConfig.java
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,189 @@
 +package org.telegram.messenger;
 +
 +import android.app.Activity;
@@ -365,6 +431,12 @@ index 0000000..da54e23
 +
 +    public static boolean hideMonetization() { return prefs().getBoolean("hide_monetization", false); }
 +    public static void setHideMonetization(boolean v) { prefs().edit().putBoolean("hide_monetization", v).apply(); }
++
++    public static String headerTitle() {
++        String t = prefs().getString("header_title", "");
++        return TextUtils.isEmpty(t) ? "CabbitGram" : t;
++    }
++    public static void setHeaderTitle(String v) { prefs().edit().putString("header_title", v == null ? "" : v.trim()).apply(); }
 +
 +    public static boolean hidePhone() { return prefs().getBoolean("hide_phone", false); }
 +    public static void setHidePhone(boolean v) { prefs().edit().putBoolean("hide_phone", v).apply(); }
@@ -713,10 +785,10 @@ index 3a5413c..0c26247 100644
              return "LOC_ERR:" + key;
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/CabbitSettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/CabbitSettingsActivity.java
 new file mode 100644
-index 0000000..1943ad5
+index 0000000..52f67bc
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/CabbitSettingsActivity.java
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,209 @@
 +package org.telegram.ui;
 +
 +import android.text.InputType;
@@ -747,7 +819,7 @@ index 0000000..1943ad5
 +
 +    private static final int ID_REFRESH = 1, ID_PROXY = 2, ID_PROXY_OFF = 3, ID_ROTATION = 4, ID_HIDE_MONEY = 5,
 +            ID_HIDE_STORIES = 6, ID_HIDE_PHONE = 7, ID_SYS_FONT = 8, ID_AUTO_UPDATE = 9, ID_CHECK_UPDATE = 10,
-+            ID_COPY_ID = 11, ID_SELF_BADGE = 12, ID_ADMIN_OFF = 13;
++            ID_COPY_ID = 11, ID_SELF_BADGE = 12, ID_ADMIN_OFF = 13, ID_HEADER = 14;
 +    private boolean proxyBusy;
 +    private String proxyStatus, updateStatus;
 +
@@ -771,6 +843,7 @@ index 0000000..1943ad5
 +        items.add(UItem.asShadow("Список прокси обновляется автоматически."));
 +
 +        items.add(UItem.asHeader("Внешний вид"));
++        items.add(UItem.asButton(ID_HEADER, "Заголовок над чатами", CabbitConfig.headerTitle()));
 +        items.add(UItem.asCheck(ID_HIDE_MONEY, "Скрыть Premium, звёзды и подарки в настройках").setChecked(CabbitConfig.hideMonetization()));
 +        items.add(UItem.asCheck(ID_HIDE_STORIES, "Скрыть истории над чатами").setChecked(CabbitConfig.hideStories()));
 +        items.add(UItem.asCheck(ID_HIDE_PHONE, "Скрыть мой номер в настройках").setChecked(CabbitConfig.hidePhone()));
@@ -811,6 +884,9 @@ index 0000000..1943ad5
 +                SharedConfig.proxyRotationEnabled = !SharedConfig.proxyRotationEnabled;
 +                SharedConfig.saveConfig();
 +                toggle(view, SharedConfig.proxyRotationEnabled);
++                break;
++            case ID_HEADER:
++                showHeaderDialog();
 +                break;
 +            case ID_HIDE_MONEY:
 +                CabbitConfig.setHideMonetization(!CabbitConfig.hideMonetization());
@@ -869,6 +945,33 @@ index 0000000..1943ad5
 +                listView.adapter.update(true);
 +                break;
 +        }
++    }
++
++    private void showHeaderDialog() {
++        if (getParentActivity() == null) return;
++        EditTextBoldCursor et = new EditTextBoldCursor(getParentActivity());
++        et.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
++        et.setTextColor(Theme.getColor(Theme.key_dialogTextBlack));
++        et.setHintTextColor(Theme.getColor(Theme.key_dialogTextHint));
++        et.setHint("CabbitGram");
++        et.setText(CabbitConfig.headerTitle());
++        et.setSelection(et.length());
++        et.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(24)});
++        et.setPadding(AndroidUtilities.dp(24), AndroidUtilities.dp(8), AndroidUtilities.dp(24), AndroidUtilities.dp(8));
++        new AlertDialog.Builder(getParentActivity())
++                .setTitle("Заголовок над чатами")
++                .setView(et)
++                .setPositiveButton("Сохранить", (d, w) -> {
++                    CabbitConfig.setHeaderTitle(et.getText().toString());
++                    listView.adapter.update(true);
++                    if (getParentLayout() != null) getParentLayout().rebuildAllFragmentViews(false, false);
++                })
++                .setNegativeButton("Сбросить", (d, w) -> {
++                    CabbitConfig.setHeaderTitle("");
++                    listView.adapter.update(true);
++                    if (getParentLayout() != null) getParentLayout().rebuildAllFragmentViews(false, false);
++                })
++                .show();
 +    }
 +
 +    // Скрытый вход в режим админа: долгое нажатие на «Скопировать мой ID»
@@ -964,6 +1067,21 @@ index a54b134..9dfc106 100644
              }
          }
          setParentActivityTitle(avatarContainer.getTitleTextView().getText());
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index e6478ee..07b1b01 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -3441,9 +3441,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                 // a new drawable (also when the view is recreated after a theme switch made elsewhere): remember its tint, the
+                 // theme hook only recolors when the color differs from the last one applied
+                 logoDrawable.setColorFilter(lastLogoDrawableColor = getThemedColor(Theme.key_telegram_color_dialogsLogo), PorterDuff.Mode.MULTIPLY);
+-                SpannableStringBuilder ssb = new SpannableStringBuilder(getString(R.string.AppName));
+-                ssb.setSpan(new ImageSpan(logoDrawable), 0, ssb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+-                actionBar.setTitle(ssb, statusDrawable);
++                actionBar.setTitle(org.telegram.messenger.CabbitConfig.headerTitle(), statusDrawable);
+                 updateStatus(UserConfig.getInstance(currentAccount).getCurrentUser(), false);
+             }
+             if (folderId == 0) {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
 index 1dd2ffe..f642ab9 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
@@ -978,7 +1096,7 @@ index 1dd2ffe..f642ab9 100644
          isResumed = true;
          PipCoordinator.getInstance().onActivityResume(this);
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
-index 9656eba..8fce9f5 100644
+index 9656eba..14b55ab 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
 @@ -614,6 +614,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
@@ -1006,6 +1124,15 @@ index 9656eba..8fce9f5 100644
              if (copyFromChatActivity) {
                  ChatActivity chatActivity = (ChatActivity) prevFragment;
                  BackupImageView fromAvatarImage = chatActivity.avatarContainer.getAvatarImageView();
+@@ -11890,7 +11894,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                 description.setSpan(new DotDividerSpan(), newString2.length() + 1, newString2.length() + 2, 0);
+                 photoDescriptionText = description;
+             }
+-            profileStatusText = newString2;
++            profileStatusText = org.telegram.messenger.CabbitBadges.withTitle(newString2, user.id);
+             updateOnlineText(true);
+ 
+             if (previousTransitionFragment != null) {
 @@ -12406,6 +12410,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                      otherItem.addSubItem(edit_contact, R.drawable.msg_edit, LocaleController.getString(R.string.EditContact));
                      otherItem.addSubItem(delete_contact, R.drawable.msg_delete, LocaleController.getString(R.string.DeleteContact));
