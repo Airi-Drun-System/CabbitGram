@@ -1,6 +1,6 @@
 # CabbitGram
 
-Неофициальный клиент Telegram для Android от VegasDev. Не связан с Telegram.
+Неофициальный клиент Telegram для Android от Vegas. Не связан с Telegram.
 
 **Исходники:** официальный [Telegram для Android](https://github.com/DrKLO/Telegram) (коммит в `.github/workflows/build.yml`) + наш патч `cabbitgram.patch`. Лицензия GPL-2.0, как у оригинала.
 

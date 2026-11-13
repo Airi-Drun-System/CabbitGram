@@ -713,7 +713,7 @@ index 3a5413c..0c26247 100644
              return "LOC_ERR:" + key;
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/CabbitSettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/CabbitSettingsActivity.java
 new file mode 100644
-index 0000000..2449c3a
+index 0000000..1943ad5
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/CabbitSettingsActivity.java
 @@ -0,0 +1,178 @@
@@ -792,7 +792,7 @@ index 0000000..2449c3a
 +        } else {
 +            items.add(UItem.asShadow("Значки видны только пользователям CabbitGram."));
 +        }
-+        items.add(UItem.asShadow("CabbitGram " + BuildVars.BUILD_VERSION_STRING + " · сборка " + BuildConfig.CABBIT_BUILD + " · VegasDev"));
++        items.add(UItem.asShadow("CabbitGram " + BuildVars.BUILD_VERSION_STRING + " · сборка " + BuildConfig.CABBIT_BUILD + " · Vegas"));
 +    }
 +
 +    private void toggle(View view, boolean value) {
