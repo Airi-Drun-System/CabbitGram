@@ -1,0 +1,70 @@
+name: Сборка CabbitGram
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['cabbitgram.patch', '.github/workflows/build.yml']
+
+permissions:
+  contents: write
+
+env:
+  TG_COMMIT: 21f7d109da6ab3506c9e9577f98c6a38771ab335   # официальный Telegram 13.2.2, на который накладывается патч
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Проверка ключей API
+        env:
+          ID: ${{ secrets.CABBIT_API_ID }}
+          HASH: ${{ secrets.CABBIT_API_HASH }}
+        run: |
+          if [ -z "$ID" ] || [ -z "$HASH" ]; then echo "Добавь секреты CABBIT_API_ID и CABBIT_API_HASH в Settings → Secrets → Actions"; exit 1; fi
+
+      - name: Освобождаем место
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/share/swift /usr/local/share/boost && df -h /
+
+      - uses: actions/checkout@v4
+        with: { path: cg }
+
+      - name: Исходники Telegram + сабмодули
+        run: |
+          git init tg && cd tg
+          git remote add origin https://github.com/DrKLO/Telegram.git
+          git fetch --depth 1 origin $TG_COMMIT && git checkout -q FETCH_HEAD
+          git submodule update --init --recursive --depth 1 --jobs 8
+
+      - name: Накладываем патч CabbitGram
+        run: cd tg && git apply ../cg/cabbitgram.patch
+
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '21' }
+
+      - name: Android NDK и CMake
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;27.2.12479018" "cmake;3.22.1" "platforms;android-36" "build-tools;36.0.0" > /dev/null
+          echo "sdk.dir=$ANDROID_HOME" > tg/local.properties
+
+      - name: Сборка APK
+        env:
+          CABBIT_API_ID: ${{ secrets.CABBIT_API_ID }}
+          CABBIT_API_HASH: ${{ secrets.CABBIT_API_HASH }}
+        run: |
+          cd tg && chmod +x gradlew
+          ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon --stacktrace
+          cp TMessagesProj_App/build/outputs/apk/afat/release/app.apk ../CabbitGram.apk
+
+      - uses: actions/upload-artifact@v4
+        with: { name: CabbitGram, path: CabbitGram.apk }
+
+      - name: Релиз
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: CabbitGram (сборка ${{ github.run_number }})
+          body: Сборка из официального Telegram 13.2.2 + патч CabbitGram. Только для arm64 (почти все современные телефоны).
+          files: CabbitGram.apk
