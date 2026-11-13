@@ -909,10 +909,37 @@ index 698bf4d..7fa88c6 100644
                  }
                  if (nameString != null && nameString.length() == 0) {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-index a54b134..09feabf 100644
+index a54b134..9dfc106 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-@@ -20242,7 +20242,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -1727,6 +1727,7 @@ public class ChatActivity extends BaseFragment implements
+ 
+     private final static int chat_menu_topic_create = 73;
+     private final static int chat_menu_topics_panel = 75;
++    private final static int cabbit_badge = 1001;
+ 
+     private final static int id_chat_compose_panel = 1000;
+ 
+@@ -3917,6 +3918,8 @@ public class ChatActivity extends BaseFragment implements
+                     }
+                 } else if (id == mute) {
+                     toggleMute(false);
++                } else if (id == cabbit_badge) {
++                    if (currentUser != null) org.telegram.messenger.CabbitBadges.showAdminDialog(ChatActivity.this, currentUser.id);
+                 } else if (id == add_shortcut) {
+                     try {
+                         getMediaDataController().installShortcut(currentUser.id, MediaDataController.SHORTCUT_TYPE_USER_OR_CHAT);
+@@ -4416,6 +4419,9 @@ public class ChatActivity extends BaseFragment implements
+             if (currentChat != null && !isTopic) {
+                 viewAsTopics = headerItem.lazilyAddSubItem(view_as_topics, R.drawable.msg_topics, LocaleController.getString(R.string.TopicViewAsTopics));
+             }
++            if (currentUser != null && !currentUser.bot && org.telegram.messenger.CabbitBadges.isAdmin()) {
++                headerItem.lazilyAddSubItem(cabbit_badge, R.drawable.msg_premium_liststar, "Значок CabbitGram");
++            }
+             if (themeDelegate.isThemeChangeAvailable(true)) {
+                 headerItem.lazilyAddSubItem(change_colors, R.drawable.msg_background, LocaleController.getString(R.string.SetWallpapers));
+             }
+@@ -20242,7 +20248,7 @@ public class ChatActivity extends BaseFragment implements
                      }
                  } else if (threadMessageId > 0) {
                      final TLRPC.User user = getMessagesController().getUser(threadMessageId);
@@ -921,6 +948,22 @@ index a54b134..09feabf 100644
                  } else {
                      TLRPC.Chat chat = getMessagesController().getChat(-threadMessageId);
                      if (chat == null) chat = currentChat;
+@@ -20320,12 +20326,12 @@ public class ChatActivity extends BaseFragment implements
+                 avatarContainer.setTitle(LocaleController.getString(R.string.SavedMessages));
+             } else if (!MessagesController.isSupportUser(currentUser) && getContactsController().contactsDict.get(currentUser.id) == null && (getContactsController().contactsDict.size() != 0 || !getContactsController().isLoadingContacts())) {
+                 if (!TextUtils.isEmpty(currentUser.phone)) {
+-                    avatarContainer.setTitle(PhoneFormat.getInstance().format("+" + currentUser.phone), currentUser.scam, currentUser.fake, currentUser.verified, getMessagesController().isPremiumUser(currentUser), currentUser.emoji_status, animated);
++                    avatarContainer.setTitle(org.telegram.messenger.CabbitBadges.withBadge(PhoneFormat.getInstance().format("+" + currentUser.phone), currentUser.id, avatarContainer.getTitleTextView().getPaint()), currentUser.scam, currentUser.fake, currentUser.verified, getMessagesController().isPremiumUser(currentUser), currentUser.emoji_status, animated);
+                 } else {
+-                    avatarContainer.setTitle(AndroidUtilities.removeRTL(AndroidUtilities.removeDiacritics(UserObject.getUserName(currentUser))), currentUser.scam, currentUser.fake, currentUser.verified, getMessagesController().isPremiumUser(currentUser), currentUser.emoji_status, animated);
++                    avatarContainer.setTitle(org.telegram.messenger.CabbitBadges.withBadge(AndroidUtilities.removeRTL(AndroidUtilities.removeDiacritics(UserObject.getUserName(currentUser))), currentUser.id, avatarContainer.getTitleTextView().getPaint()), currentUser.scam, currentUser.fake, currentUser.verified, getMessagesController().isPremiumUser(currentUser), currentUser.emoji_status, animated);
+                 }
+             } else {
+-                avatarContainer.setTitle(AndroidUtilities.removeRTL(AndroidUtilities.removeDiacritics(UserObject.getUserName(currentUser))), currentUser.scam, currentUser.fake, currentUser.verified, getMessagesController().isPremiumUser(currentUser), !MessagesController.isSupportUser(currentUser) ? currentUser.emoji_status : null, animated);
++                avatarContainer.setTitle(org.telegram.messenger.CabbitBadges.withBadge(AndroidUtilities.removeRTL(AndroidUtilities.removeDiacritics(UserObject.getUserName(currentUser))), currentUser.id, avatarContainer.getTitleTextView().getPaint()), currentUser.scam, currentUser.fake, currentUser.verified, getMessagesController().isPremiumUser(currentUser), !MessagesController.isSupportUser(currentUser) ? currentUser.emoji_status : null, animated);
+             }
+         }
+         setParentActivityTitle(avatarContainer.getTitleTextView().getText());
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
 index 1dd2ffe..f642ab9 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
