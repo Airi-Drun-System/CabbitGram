@@ -120,6 +120,189 @@ index ca82181..a22448c 100644
      // the second main tab: News, or Contacts as before them
  
      public static boolean SUPPORTS_FPNV = true;
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/CabbitConfig.java b/TMessagesProj/src/main/java/org/telegram/messenger/CabbitConfig.java
+new file mode 100644
+index 0000000..80b0946
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/CabbitConfig.java
+@@ -0,0 +1,177 @@
++package org.telegram.messenger;
++
++import android.app.Activity;
++import android.content.SharedPreferences;
++import android.net.Uri;
++import android.os.Build;
++import android.os.SystemClock;
++import android.text.TextUtils;
++import android.view.Display;
++import android.view.Window;
++import android.view.WindowManager;
++
++import org.json.JSONArray;
++import org.json.JSONObject;
++import org.telegram.tgnet.ConnectionsManager;
++import org.telegram.utils.proxy.ProxySettings;
++
++import java.io.BufferedReader;
++import java.io.InputStreamReader;
++import java.net.HttpURLConnection;
++import java.net.URL;
++import java.util.ArrayList;
++
++// CabbitGram: собственные настройки клиента (раздел «CabbitGram» в настройках)
++public final class CabbitConfig {
++
++    public static final String PROXY_LIST_URL = "https://airi-drun-system.github.io/CabbitGram/proxies.json";
++
++    private static SharedPreferences prefs() {
++        return ApplicationLoader.applicationContext.getSharedPreferences("cabbitconfig", Activity.MODE_PRIVATE);
++    }
++
++    public static boolean highRefresh() { return prefs().getBoolean("high_refresh", true); }
++    public static void setHighRefresh(boolean v) { prefs().edit().putBoolean("high_refresh", v).apply(); }
++
++    public static boolean hideMonetization() { return prefs().getBoolean("hide_monetization", false); }
++    public static void setHideMonetization(boolean v) { prefs().edit().putBoolean("hide_monetization", v).apply(); }
++
++    // ---------- Плавность: максимальная частота экрана (90/120/144 Гц) ----------
++    public static void applyRefreshRate(Activity activity) {
++        if (activity == null || Build.VERSION.SDK_INT < 23) return;
++        try {
++            final Window window = activity.getWindow();
++            final Display display = activity.getWindowManager().getDefaultDisplay();
++            final WindowManager.LayoutParams lp = window.getAttributes();
++            if (highRefresh()) {
++                final Display.Mode cur = display.getMode();
++                Display.Mode best = cur;
++                for (Display.Mode m : display.getSupportedModes()) {
++                    if (m.getPhysicalWidth() == cur.getPhysicalWidth() && m.getPhysicalHeight() == cur.getPhysicalHeight() && m.getRefreshRate() > best.getRefreshRate()) {
++                        best = m;
++                    }
++                }
++                lp.preferredDisplayModeId = best.getModeId();
++                lp.preferredRefreshRate = best.getRefreshRate();
++            } else {
++                lp.preferredDisplayModeId = 0;
++                lp.preferredRefreshRate = 0;
++            }
++            window.setAttributes(lp);
++        } catch (Throwable e) {
++            FileLog.e(e);
++        }
++    }
++
++    public static float maxRefreshRate(Activity activity) {
++        try {
++            float max = 60;
++            for (Display.Mode m : activity.getWindowManager().getDefaultDisplay().getSupportedModes()) max = Math.max(max, m.getRefreshRate());
++            return max;
++        } catch (Throwable e) {
++            return 60;
++        }
++    }
++
++    // ---------- Прокси одной кнопкой ----------
++    private static String nz(String s) { return s == null ? "" : s; }
++
++    public static void connectBestProxy(Utilities.Callback<String> done) {
++        Utilities.globalQueue.postRunnable(() -> {
++            final ArrayList<ProxySettings> list = new ArrayList<>();
++            try {
++                HttpURLConnection c = (HttpURLConnection) new URL(PROXY_LIST_URL + "?t=" + System.currentTimeMillis()).openConnection();
++                c.setConnectTimeout(8000);
++                c.setReadTimeout(8000);
++                StringBuilder sb = new StringBuilder();
++                try (BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), "UTF-8"))) {
++                    String line;
++                    while ((line = r.readLine()) != null) sb.append(line);
++                }
++                JSONArray arr = new JSONObject(sb.toString()).getJSONArray("proxies");
++                for (int i = 0; i < arr.length(); i++) {
++                    try {
++                        Uri u = Uri.parse(arr.getString(i).replace("https://t.me/", "tg://"));
++                        String server = u.getQueryParameter("server"), port = u.getQueryParameter("port");
++                        if (TextUtils.isEmpty(server) || TextUtils.isEmpty(port)) continue;
++                        String secret = nz(u.getQueryParameter("secret"));
++                        list.add(ProxySettings.builder()
++                                .setAddress(server).setPort(Integer.parseInt(port))
++                                .setUser(nz(u.getQueryParameter("user"))).setPassword(nz(u.getQueryParameter("pass")))
++                                .setSecret(secret)
++                                .setType(TextUtils.isEmpty(secret) ? ProxySettings.Type.SOCKS5 : ProxySettings.Type.MTPROTO)
++                                .build());
++                    } catch (Exception e) {
++                        FileLog.e(e);
++                    }
++                }
++            } catch (Exception e) {
++                FileLog.e(e);
++            }
++            AndroidUtilities.runOnUIThread(() -> {
++                if (list.isEmpty()) {
++                    done.run("Список прокси пуст или недоступен");
++                } else {
++                    pingAndConnect(list, done);
++                }
++            });
++        });
++    }
++
++    private static void pingAndConnect(ArrayList<ProxySettings> list, Utilities.Callback<String> done) {
++        final int[] left = {list.size()};
++        final boolean[] finished = {false};
++        final SharedConfig.ProxyInfo[] best = {null};
++        final Runnable finish = () -> {
++            if (finished[0]) return;
++            finished[0] = true;
++            SharedConfig.saveProxyList();
++            if (best[0] == null) {
++                done.run("Ни один прокси сейчас не отвечает");
++                return;
++            }
++            SharedConfig.currentProxy = best[0];
++            SharedPreferences.Editor ed = MessagesController.getGlobalMainSettings().edit();
++            best[0].settings.toSharedPreferences(ed);
++            ed.putBoolean("proxy_enabled", true);
++            ed.commit();
++            SharedConfig.proxyRotationEnabled = true;   // если прокси отвалится — Telegram сам переключится на следующий из списка
++            SharedConfig.saveConfig();
++            ConnectionsManager.setProxySettings(true, best[0].settings);
++            NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged);
++            done.run("Подключено: " + best[0].settings.getAddress() + " · " + best[0].ping + " мс");
++        };
++        for (ProxySettings s : list) {
++            final SharedConfig.ProxyInfo info = SharedConfig.addProxy(new SharedConfig.ProxyInfo(s));
++            info.checking = true;
++            long req = ConnectionsManager.getInstance(UserConfig.selectedAccount).checkProxy(s, time -> AndroidUtilities.runOnUIThread(() -> {
++                info.checking = false;
++                info.availableCheckTime = SystemClock.elapsedRealtime();
++                if (time > 0) {
++                    info.ping = time;
++                    info.available = true;
++                    if (best[0] == null || time < best[0].ping) best[0] = info;
++                } else {
++                    info.available = false;
++                }
++                if (--left[0] <= 0) finish.run();
++            }));
++            if (req == 0 && s.getType() != ProxySettings.Type.WEB) {
++                info.checking = false;
++                left[0]--;
++            }
++        }
++        if (left[0] <= 0) finish.run();
++        AndroidUtilities.runOnUIThread(finish, 12000);   // не ждём вечно медленные прокси
++    }
++
++    public static void disableProxy() {
++        SharedPreferences.Editor ed = MessagesController.getGlobalMainSettings().edit();
++        ed.putBoolean("proxy_enabled", false);
++        ed.commit();
++        if (SharedConfig.currentProxy != null) {
++            ConnectionsManager.setProxySettings(false, SharedConfig.currentProxy.settings);
++        }
++        NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged);
++    }
++}
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/LocaleController.java b/TMessagesProj/src/main/java/org/telegram/messenger/LocaleController.java
 index 3a5413c..0c26247 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/LocaleController.java
@@ -134,6 +317,174 @@ index 3a5413c..0c26247 100644
          final String value = getStringV2(key, res, fallback);
          if (value == null) {
              return "LOC_ERR:" + key;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/CabbitSettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/CabbitSettingsActivity.java
+new file mode 100644
+index 0000000..93f28d0
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/ui/CabbitSettingsActivity.java
+@@ -0,0 +1,94 @@
++package org.telegram.ui;
++
++import android.view.View;
++
++import org.telegram.messenger.BuildVars;
++import org.telegram.messenger.CabbitConfig;
++import org.telegram.messenger.SharedConfig;
++import org.telegram.ui.Cells.TextCheckCell;
++import org.telegram.ui.Components.BulletinFactory;
++import org.telegram.ui.Components.UItem;
++import org.telegram.ui.Components.UniversalAdapter;
++import org.telegram.ui.Components.UniversalFragment;
++
++import java.util.ArrayList;
++
++// CabbitGram: раздел собственных настроек
++public class CabbitSettingsActivity extends UniversalFragment {
++
++    private static final int ID_REFRESH = 1, ID_PROXY = 2, ID_PROXY_OFF = 3, ID_ROTATION = 4, ID_HIDE_MONEY = 5;
++    private boolean proxyBusy;
++    private String proxyStatus;
++
++    @Override
++    protected CharSequence getTitle() {
++        return "CabbitGram";
++    }
++
++    @Override
++    protected void fillItems(ArrayList<UItem> items, UniversalAdapter adapter) {
++        items.add(UItem.asHeader("Плавность"));
++        final int hz = Math.round(CabbitConfig.maxRefreshRate(getParentActivity()));
++        items.add(UItem.asCheck(ID_REFRESH, "Максимальная частота экрана (" + hz + " Гц)").setChecked(CabbitConfig.highRefresh()));
++        items.add(UItem.asShadow("Прокрутка и анимации всегда на максимальной частоте экрана. Батарея садится чуть быстрее."));
++
++        items.add(UItem.asHeader("Прокси"));
++        items.add(UItem.asButton(ID_PROXY, proxyBusy ? "Ищу самый быстрый…" : "Подключить лучший прокси", proxyStatus != null ? proxyStatus : (SharedConfig.isProxyEnabled() ? "включён" : "")).accent());
++        items.add(UItem.asCheck(ID_ROTATION, "Переключаться, если прокси отвалился").setChecked(SharedConfig.proxyRotationEnabled));
++        if (SharedConfig.isProxyEnabled()) {
++            items.add(UItem.asButton(ID_PROXY_OFF, "Отключить прокси").red());
++        }
++        items.add(UItem.asShadow("Список прокси обновляется с сервера CabbitGram, пересобирать приложение не нужно."));
++
++        items.add(UItem.asHeader("Внешний вид"));
++        items.add(UItem.asCheck(ID_HIDE_MONEY, "Скрыть Premium, звёзды и подарки в настройках").setChecked(CabbitConfig.hideMonetization()));
++        items.add(UItem.asShadow("CabbitGram " + BuildVars.BUILD_VERSION_STRING + " · неофициальный клиент на основе Telegram от VegasDev"));
++    }
++
++    @Override
++    protected void onClick(UItem item, View view, int position, float x, float y) {
++        switch (item.id) {
++            case ID_REFRESH: {
++                CabbitConfig.setHighRefresh(!CabbitConfig.highRefresh());
++                ((TextCheckCell) view).setChecked(CabbitConfig.highRefresh());
++                CabbitConfig.applyRefreshRate(getParentActivity());
++                break;
++            }
++            case ID_ROTATION: {
++                SharedConfig.proxyRotationEnabled = !SharedConfig.proxyRotationEnabled;
++                SharedConfig.saveConfig();
++                ((TextCheckCell) view).setChecked(SharedConfig.proxyRotationEnabled);
++                break;
++            }
++            case ID_HIDE_MONEY: {
++                CabbitConfig.setHideMonetization(!CabbitConfig.hideMonetization());
++                ((TextCheckCell) view).setChecked(CabbitConfig.hideMonetization());
++                break;
++            }
++            case ID_PROXY: {
++                if (proxyBusy) return;
++                proxyBusy = true;
++                proxyStatus = null;
++                listView.adapter.update(true);
++                CabbitConfig.connectBestProxy(result -> {
++                    proxyBusy = false;
++                    proxyStatus = result;
++                    if (listView != null) listView.adapter.update(true);
++                    BulletinFactory.of(this).createSimpleBulletin(org.telegram.messenger.R.raw.info, result).show();
++                });
++                break;
++            }
++            case ID_PROXY_OFF: {
++                CabbitConfig.disableProxy();
++                proxyStatus = null;
++                listView.adapter.update(true);
++                break;
++            }
++        }
++    }
++
++    @Override
++    protected boolean onLongClick(UItem item, View view, int position, float x, float y) {
++        return false;
++    }
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
+index 1dd2ffe..edbf952 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
+@@ -7209,6 +7209,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+     @Override
+     protected void onResume() {
+         super.onResume();
++        org.telegram.messenger.CabbitConfig.applyRefreshRate(this);   // CabbitGram: максимальная частота экрана
+         WidgetMedia.onAppPaused(false);
+         isResumed = true;
+         PipCoordinator.getInstance().onActivityResume(this);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
+index e2b917b..e387034 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
+@@ -795,6 +795,10 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
+             items.add(UItem.asShadow(null));
+         }
+ 
++        // CabbitGram: свой раздел настроек
++        items.add(SettingCell.Factory.of(100, 0xFF6A6A75, 0xFF2B2B31, R.drawable.settings_features, "CabbitGram", "Плавность, прокси, внешний вид"));
++        items.add(UItem.asShadow(null));
++
+         items.add(SettingCell.Factory.of(1, IconBackgroundColors.BLUE.top, IconBackgroundColors.BLUE.bottom, R.drawable.settings_account, getString(R.string.SettingsAccount), getString(R.string.SettingsAccountInfo)));
+         items.add(SettingCell.Factory.of(2, IconBackgroundColors.ORANGE.top, IconBackgroundColors.ORANGE.bottom, R.drawable.settings_chat, getString(R.string.SettingsChat), getString(R.string.SettingsChatInfo)));
+         items.add(SettingCell.Factory.of(3, IconBackgroundColors.GREEN.top, IconBackgroundColors.GREEN.bottom, R.drawable.settings_privacy, getString(R.string.SettingsPrivacySecurity), getString(R.string.SettingsPrivacySecurityInfo)));
+@@ -812,25 +816,25 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
+             items.add(UItem.asShadow(null));
+         }
+ 
+-        if (!getMessagesController().premiumFeaturesBlocked()) {
++        if (!org.telegram.messenger.CabbitConfig.hideMonetization() && !getMessagesController().premiumFeaturesBlocked()) {
+             items.add(SettingCell.Factory.of(11, 0xFFB659FF, 0xFF617CFF, R.drawable.settings_premium, getString(R.string.TelegramPremium)));
+         }
+-        if (getMessagesController().starsPurchaseAvailable()) {
++        if (!org.telegram.messenger.CabbitConfig.hideMonetization() && getMessagesController().starsPurchaseAvailable()) {
+             StarsController c = StarsController.getInstance(currentAccount);
+             long balance = c.getBalance().amount;
+             items.add(SettingCell.Factory.of(12, 0xFFEFA612, 0xFFE77512, R.drawable.settings_stars, getString(R.string.TelegramStars), null, c.balanceAvailable() && balance > 0 ? StarsIntroActivity.formatStarsAmount(c.getBalance(), 0.85f, ' ') : ""));
+         }
+         StarsController.getInstance(currentAccount, true).getBalance();
+-        if (ApplicationLoader.isBetaBuild() || ApplicationLoader.isStandaloneBuild() || ApplicationLoader.isHuaweiStoreBuild() || (StarsController.getInstance(currentAccount, true).balanceAvailable() && (StarsController.getInstance(currentAccount, true).hasTransactions() || StarsController.getInstance(currentAccount, true).getBalance().positive()))) {
++        if (!org.telegram.messenger.CabbitConfig.hideMonetization() && (ApplicationLoader.isBetaBuild() || ApplicationLoader.isStandaloneBuild() || ApplicationLoader.isHuaweiStoreBuild() || (StarsController.getInstance(currentAccount, true).balanceAvailable() && (StarsController.getInstance(currentAccount, true).hasTransactions() || StarsController.getInstance(currentAccount, true).getBalance().positive())))) {
+             final StarsController c = StarsController.getTonInstance(currentAccount);
+             final long balance = c.getBalance().amount;
+             items.add(SettingCell.Factory.of(13, 0xFF1BA4ED, 0xFF1488E1, R.drawable.filled_gram_earnings, getString(R.string.GramEarnings), null, c.balanceAvailable() && balance > 0 ? StarsIntroActivity.formatStarsAmount(c.getBalance(), 0.85f, ' ') : ""));
+         }
+ 
+-        if (!getMessagesController().premiumFeaturesBlocked()) {
++        if (!org.telegram.messenger.CabbitConfig.hideMonetization() && !getMessagesController().premiumFeaturesBlocked()) {
+             items.add(SettingCell.Factory.of(15, 0xFFF45255, 0xFFDF3955, R.drawable.settings_business, getString(R.string.TelegramBusiness)));
+         }
+-        if (!getMessagesController().premiumPurchaseBlocked()) {
++        if (!org.telegram.messenger.CabbitConfig.hideMonetization() && !getMessagesController().premiumPurchaseBlocked()) {
+             items.add(SettingCell.Factory.of(16, 0xFFF38B31, 0xFFE26314, R.drawable.settings_gift, getString(R.string.SendAGift)));
+         }
+         if (items.get(items.size() - 1).viewType != UniversalAdapter.VIEW_TYPE_SHADOW)
+@@ -917,6 +921,9 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
+             return;
+         }
+         switch (item.id) {
++            case 100:
++                presentSettingFragment(new CabbitSettingsActivity());
++                break;
+             case 1:
+                 presentSettingFragment(new UserInfoActivity());
+                 break;
 diff --git a/TMessagesProj/src/main/res/drawable-nodpi/cabbit_icon_bg.png b/TMessagesProj/src/main/res/drawable-nodpi/cabbit_icon_bg.png
 new file mode 100644
 index 0000000000000000000000000000000000000000..c0890649e7470908ce16ca25d045dc2658bd4ce7
