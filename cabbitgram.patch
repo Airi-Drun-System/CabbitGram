@@ -836,6 +836,223 @@ index 55452d3..9c59c8a 100644
          final SendMessageChatArguments sendMessageChatArguments = sendMessageParams.sendMessageChatArguments != null ?
                  sendMessageParams.sendMessageChatArguments : SendMessageChatArguments.EMPTY;
          String message = sendMessageParams.message;
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/CabbitHooks.java b/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/CabbitHooks.java
+new file mode 100644
+index 0000000..364db46
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/CabbitHooks.java
+@@ -0,0 +1,211 @@
++package org.telegram.messenger.cabbit;
++
++import org.telegram.messenger.FileLog;
++
++import java.lang.reflect.Constructor;
++import java.lang.reflect.InvocationTargetException;
++import java.lang.reflect.Member;
++import java.lang.reflect.Method;
++import java.lang.reflect.Modifier;
++import java.util.ArrayList;
++import java.util.Arrays;
++
++// Перехват любых Java-методов приложения для плагинов. Нативная часть — libcabbithook (LSPlant + ShadowHook).
++public final class CabbitHooks {
++
++    private static Boolean ready;
++    private static String initError;
++    private static final ArrayList<Hook> hooks = new ArrayList<>();
++
++    private static native boolean nativeInit();
++    private static native Method nativeHook(Member target, Object hooker, Method callback);
++    private static native boolean nativeUnhook(Member target);
++    private static native boolean nativeDeoptimize(Member method);
++
++    public static synchronized boolean init() {
++        if (ready == null) {
++            try {
++                System.loadLibrary("cabbithook");
++                ready = nativeInit();
++                if (!ready) initError = "Перехват методов не поддерживается на этой версии Android";
++            } catch (Throwable t) {
++                FileLog.e(t);
++                ready = false;
++                initError = "Перехват методов недоступен: " + t.getMessage();
++            }
++        }
++        return ready;
++    }
++
++    public interface Callback {
++        void before(Param param) throws Throwable;
++        void after(Param param) throws Throwable;
++    }
++
++    public static final class Param {
++        public Member method;
++        public Object thisObject;
++        public Object[] args;
++        Object result;
++        Throwable throwable;
++        boolean returnEarly;
++
++        public Object getResult() { return result; }
++        public void setResult(Object value) { result = value; throwable = null; returnEarly = true; }
++        public Throwable getThrowable() { return throwable; }
++        public void setThrowable(Throwable t) { throwable = t; result = null; returnEarly = true; }
++        public Object callOriginal() throws Throwable { return invokeBackup(this); }
++        Hook hook;
++    }
++
++    public static final class Hook {
++        final Member target;
++        final Callback callback;
++        final String owner;
++        volatile Method backup;
++        final boolean isStatic;
++
++        Hook(Member target, Callback callback, String owner) {
++            this.target = target;
++            this.callback = callback;
++            this.owner = owner;
++            this.isStatic = Modifier.isStatic(target.getModifiers());
++        }
++
++        // Вызывается LSPlant вместо оригинала. Сигнатура обязана быть именно такой.
++        public Object callback(Object[] args) throws Throwable {
++            Param p = new Param();
++            p.hook = this;
++            p.method = target;
++            if (isStatic) {
++                p.args = args;
++            } else {
++                p.thisObject = args[0];
++                p.args = Arrays.copyOfRange(args, 1, args.length);
++            }
++            try {
++                callback.before(p);
++            } catch (Throwable t) {
++                FileLog.e(t);
++            }
++            if (!p.returnEarly) {
++                try {
++                    p.result = invokeBackup(p);
++                } catch (Throwable t) {
++                    p.throwable = t;
++                }
++            }
++            try {
++                callback.after(p);
++            } catch (Throwable t) {
++                FileLog.e(t);
++            }
++            if (p.throwable != null) throw p.throwable;
++            return p.result;
++        }
++
++        public void unhook() {
++            CabbitHooks.unhook(this);
++        }
++    }
++
++    static Object invokeBackup(Param p) throws Throwable {
++        try {
++            return p.hook.backup.invoke(p.thisObject, p.args);
++        } catch (InvocationTargetException e) {
++            throw e.getCause();
++        }
++    }
++
++    public static Hook hook(String owner, Member target, Callback callback) throws Exception {
++        if (!(target instanceof Method) && !(target instanceof Constructor)) throw new IllegalArgumentException("Можно перехватывать только методы и конструкторы");
++        if (Modifier.isAbstract(target.getModifiers())) throw new IllegalArgumentException("Нельзя перехватить абстрактный метод: " + target);
++        if (!init()) throw new Exception(initError);
++        Hook h = new Hook(target, callback, owner);
++        Method cb = Hook.class.getDeclaredMethod("callback", Object[].class);
++        Method backup = nativeHook(target, h, cb);
++        if (backup == null) throw new Exception("Не удалось перехватить " + target);
++        backup.setAccessible(true);
++        h.backup = backup;
++        synchronized (hooks) {
++            hooks.add(h);
++        }
++        return h;
++    }
++
++    public static void unhook(Hook h) {
++        synchronized (hooks) {
++            if (!hooks.remove(h)) return;
++        }
++        try {
++            nativeUnhook(h.target);
++        } catch (Throwable t) {
++            FileLog.e(t);
++        }
++    }
++
++    public static void unhookAll(String owner) {
++        ArrayList<Hook> mine = new ArrayList<>();
++        synchronized (hooks) {
++            for (Hook h : hooks) if (owner.equals(h.owner)) mine.add(h);
++        }
++        for (Hook h : mine) unhook(h);
++    }
++
++    /** Если метод встроен JIT-ом в вызывающих, перехват может не срабатывать — это заставляет их вызывать его честно. */
++    public static boolean deoptimize(Member method) {
++        try {
++            return init() && nativeDeoptimize(method);
++        } catch (Throwable t) {
++            FileLog.e(t);
++            return false;
++        }
++    }
++
++    // ---------- Поиск по имени (удобно из Python) ----------
++    public static Class<?> findClass(String name) throws ClassNotFoundException {
++        switch (name) {
++            case "int": return int.class;
++            case "long": return long.class;
++            case "boolean": return boolean.class;
++            case "float": return float.class;
++            case "double": return double.class;
++            case "byte": return byte.class;
++            case "short": return short.class;
++            case "char": return char.class;
++            case "void": return void.class;
++        }
++        if (name.endsWith("[]")) {
++            return java.lang.reflect.Array.newInstance(findClass(name.substring(0, name.length() - 2)), 0).getClass();
++        }
++        return Class.forName(name, false, CabbitHooks.class.getClassLoader());
++    }
++
++    /** params == null — первый метод с таким именем (включая унаследованные). */
++    public static Method findMethod(String className, String name, String[] params) throws Exception {
++        Class<?> c = findClass(className);
++        Class<?>[] types = null;
++        if (params != null) {
++            types = new Class<?>[params.length];
++            for (int i = 0; i < params.length; i++) types[i] = findClass(params[i]);
++        }
++        for (Class<?> k = c; k != null; k = k.getSuperclass()) {
++            for (Method m : k.getDeclaredMethods()) {
++                if (!m.getName().equals(name)) continue;
++                if (types != null && !Arrays.equals(m.getParameterTypes(), types)) continue;
++                m.setAccessible(true);
++                return m;
++            }
++        }
++        throw new NoSuchMethodException(className + "." + name + (params != null ? Arrays.toString(params) : ""));
++    }
++
++    public static Constructor<?> findConstructor(String className, String[] params) throws Exception {
++        Class<?> c = findClass(className);
++        Class<?>[] types = new Class<?>[params == null ? 0 : params.length];
++        for (int i = 0; i < types.length; i++) types[i] = findClass(params[i]);
++        Constructor<?> k = c.getDeclaredConstructor(types);
++        k.setAccessible(true);
++        return k;
++    }
++}
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/CabbitPluginApi.java b/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/CabbitPluginApi.java
 new file mode 100644
 index 0000000..b6f6728
@@ -896,10 +1113,10 @@ index 0000000..b6f6728
 +}
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/CabbitPlugins.java b/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/CabbitPlugins.java
 new file mode 100644
-index 0000000..5a32852
+index 0000000..f114724
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/CabbitPlugins.java
-@@ -0,0 +1,339 @@
+@@ -0,0 +1,341 @@
 +package org.telegram.messenger.cabbit;
 +
 +import android.app.Activity;
@@ -1040,6 +1257,7 @@ index 0000000..5a32852
 +            FileLog.e(t);
 +            e.instance = null;
 +            e.error = shortError(t);
++            CabbitHooks.unhookAll(e.id);
 +        }
 +    }
 +
@@ -1049,6 +1267,7 @@ index 0000000..5a32852
 +        if (inst != null) {
 +            try { engine.unload(inst); } catch (Throwable t) { FileLog.e(t); }
 +        }
++        CabbitHooks.unhookAll(e.id);   // перехваты плагина снимаются вместе с ним
 +    }
 +
 +    private static String shortError(Throwable t) {
@@ -13711,7 +13930,7 @@ index e4f8cf6..1399e78 100644
      <string name="English">English</string>
      <string name="LanguageNameInEnglish">English</string>
 diff --git a/TMessagesProj_App/build.gradle b/TMessagesProj_App/build.gradle
-index daff205..7ec560e 100644
+index daff205..a5e9fcc 100644
 --- a/TMessagesProj_App/build.gradle
 +++ b/TMessagesProj_App/build.gradle
 @@ -1,5 +1,6 @@
@@ -13721,7 +13940,16 @@ index daff205..7ec560e 100644
  
  repositories {
      mavenCentral()
-@@ -55,10 +56,19 @@ android {
+@@ -19,6 +20,8 @@ dependencies {
+     implementation project(':TMessagesProj')
+     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
+     implementation files('../TMessagesProj/libs/libgsaverification-client.aar')
++    implementation 'org.lsposed.lsplant:lsplant-standalone:6.4'   // CabbitGram: перехват методов (LGPL-3.0)
++    implementation 'com.bytedance.android:shadowhook:1.0.10'       // CabbitGram: inline-хуки для LSPlant (MIT)
+ }
+ 
+ android {
+@@ -55,10 +58,19 @@ android {
          }
  
          release {
@@ -13745,16 +13973,16 @@ index daff205..7ec560e 100644
          }
      }
  
-@@ -122,7 +132,7 @@ android {
+@@ -122,7 +134,7 @@ android {
      productFlavors {
          bundleAfat {
              ndk {
 -                abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
-+                abiFilters "arm64-v8a", "x86_64"   // CabbitGram: Python есть только для 64-бит
++                abiFilters "arm64-v8a"   // CabbitGram: Python и ShadowHook — только arm64
              }
              ext {
                  abiVersionCode = 1
-@@ -131,7 +141,7 @@ android {
+@@ -131,7 +143,7 @@ android {
          }
          afat {
              ndk {
@@ -13763,7 +13991,7 @@ index daff205..7ec560e 100644
              }
              sourceSets.debug {
                  manifest.srcFile '../TMessagesProj/config/debug/AndroidManifest_SDK23.xml'
-@@ -166,7 +176,7 @@ android {
+@@ -166,7 +178,7 @@ android {
      }
  
      defaultConfig {
@@ -13772,7 +14000,32 @@ index daff205..7ec560e 100644
          targetSdkVersion 36
          versionName APP_VERSION_NAME
          ndkVersion "27.2.12479018"
-@@ -195,3 +205,13 @@ android {
+@@ -178,14 +190,22 @@ android {
+         externalNativeBuild {
+             cmake {
+                 version '3.22.1'
+-                arguments '-DANDROID_STL=c++_static', '-DANDROID_PLATFORM=android-23' // , '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON'
+-                targets 'tmessages.49', 'twidget'
++                arguments '-DANDROID_STL=c++_static', '-DANDROID_PLATFORM=android-24' // , '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON'
++                targets 'cabbithook'   // CabbitGram: перехват методов для плагинов
+             }
+         }
+     }
+ 
++    externalNativeBuild {
++        cmake {
++            path 'src/main/cpp/CMakeLists.txt'
++            version '3.22.1'
++        }
++    }
++
+     buildFeatures {
+         buildConfig = true
++        prefab = true
+     }
+     namespace 'org.telegram.messenger.regular'
+ 
+@@ -195,3 +215,13 @@ android {
  }
  
  apply plugin: 'com.google.gms.google-services'
@@ -13855,6 +14108,118 @@ index 640e841..6e79137 100644
      }
    ],
    "configuration_version": "1"
+diff --git a/TMessagesProj_App/src/main/cpp/CMakeLists.txt b/TMessagesProj_App/src/main/cpp/CMakeLists.txt
+new file mode 100644
+index 0000000..fb9e0fe
+--- /dev/null
++++ b/TMessagesProj_App/src/main/cpp/CMakeLists.txt
+@@ -0,0 +1,11 @@
++cmake_minimum_required(VERSION 3.18.1)
++project(cabbithook)
++
++set(CMAKE_CXX_STANDARD 20)
++set(CMAKE_CXX_STANDARD_REQUIRED ON)
++
++find_package(lsplant REQUIRED CONFIG)
++find_package(shadowhook REQUIRED CONFIG)
++
++add_library(cabbithook SHARED cabbithook.cpp)
++target_link_libraries(cabbithook lsplant::lsplant shadowhook::shadowhook log)
+diff --git a/TMessagesProj_App/src/main/cpp/cabbithook.cpp b/TMessagesProj_App/src/main/cpp/cabbithook.cpp
+new file mode 100644
+index 0000000..c35ee3d
+--- /dev/null
++++ b/TMessagesProj_App/src/main/cpp/cabbithook.cpp
+@@ -0,0 +1,89 @@
++// CabbitGram: перехват Java-методов для плагинов (LSPlant + ShadowHook)
++#include <jni.h>
++#include <android/log.h>
++#include <lsplant.hpp>
++#include <shadowhook.h>
++
++#include <mutex>
++#include <string>
++#include <unordered_map>
++
++#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "CabbitHook", __VA_ARGS__)
++
++static std::mutex g_mutex;
++static std::unordered_map<void *, void *> g_stubs;  // адрес функции -> заглушка ShadowHook
++static bool g_ready = false;
++static void *g_art = nullptr;
++
++static void *InlineHook(void *target, void *hooker) {
++    void *orig = nullptr;
++    void *stub = shadowhook_hook_func_addr(target, hooker, &orig);
++    if (stub == nullptr) {
++        LOGE("inline hook failed: %d", shadowhook_get_errno());
++        return nullptr;
++    }
++    std::lock_guard<std::mutex> lock(g_mutex);
++    g_stubs[target] = stub;
++    return orig;
++}
++
++static bool InlineUnhook(void *func) {
++    void *stub;
++    {
++        std::lock_guard<std::mutex> lock(g_mutex);
++        auto it = g_stubs.find(func);
++        if (it == g_stubs.end()) return false;
++        stub = it->second;
++        g_stubs.erase(it);
++    }
++    return shadowhook_unhook(stub) == 0;
++}
++
++static void *ResolveArtSymbol(std::string_view name) {
++    return shadowhook_dlsym(g_art, std::string(name).c_str());
++}
++
++static void *ResolveArtSymbolPrefix(std::string_view) {
++    return nullptr;  // shortcut: поиска по префиксу нет; на версиях ART, где он нужен, Init вернёт false и перехват просто будет недоступен
++}
++
++extern "C" JNIEXPORT jboolean JNICALL
++Java_org_telegram_messenger_cabbit_CabbitHooks_nativeInit(JNIEnv *env, jclass) {
++    if (g_ready) return JNI_TRUE;
++    if (shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false) != 0) {
++        LOGE("shadowhook_init failed");
++        return JNI_FALSE;
++    }
++    g_art = shadowhook_dlopen("libart.so");
++    if (g_art == nullptr) {
++        LOGE("libart.so not found");
++        return JNI_FALSE;
++    }
++    lsplant::InitInfo info{
++            .inline_hooker = InlineHook,
++            .inline_unhooker = InlineUnhook,
++            .art_symbol_resolver = ResolveArtSymbol,
++            .art_symbol_prefix_resolver = ResolveArtSymbolPrefix,
++    };
++    g_ready = lsplant::Init(env, info);
++    if (!g_ready) LOGE("lsplant init failed");
++    return g_ready ? JNI_TRUE : JNI_FALSE;
++}
++
++extern "C" JNIEXPORT jobject JNICALL
++Java_org_telegram_messenger_cabbit_CabbitHooks_nativeHook(JNIEnv *env, jclass, jobject target, jobject hooker, jobject callback) {
++    if (!g_ready) return nullptr;
++    return lsplant::Hook(env, target, hooker, callback);
++}
++
++extern "C" JNIEXPORT jboolean JNICALL
++Java_org_telegram_messenger_cabbit_CabbitHooks_nativeUnhook(JNIEnv *env, jclass, jobject target) {
++    if (!g_ready) return JNI_FALSE;
++    return lsplant::UnHook(env, target) ? JNI_TRUE : JNI_FALSE;
++}
++
++extern "C" JNIEXPORT jboolean JNICALL
++Java_org_telegram_messenger_cabbit_CabbitHooks_nativeDeoptimize(JNIEnv *env, jclass, jobject method) {
++    if (!g_ready) return JNI_FALSE;
++    return lsplant::Deoptimize(env, method) ? JNI_TRUE : JNI_FALSE;
++}
 diff --git a/TMessagesProj_App/src/main/java/org/telegram/messenger/ApplicationLoaderImpl.java b/TMessagesProj_App/src/main/java/org/telegram/messenger/ApplicationLoaderImpl.java
 index 7b80edf..e63f805 100644
 --- a/TMessagesProj_App/src/main/java/org/telegram/messenger/ApplicationLoaderImpl.java
@@ -13934,10 +14299,10 @@ index 0000000..388310d
 +}
 diff --git a/TMessagesProj_App/src/main/python/cabbit/__init__.py b/TMessagesProj_App/src/main/python/cabbit/__init__.py
 new file mode 100644
-index 0000000..cdfa260
+index 0000000..721fb51
 --- /dev/null
 +++ b/TMessagesProj_App/src/main/python/cabbit/__init__.py
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,181 @@
 +"""CabbitGram plugin API.
 +
 +Минимальный плагин:
@@ -13956,9 +14321,12 @@ index 0000000..cdfa260
 +
 +_api = jclass("org.telegram.messenger.cabbit.CabbitPluginApi")
 +_Runnable = jclass("java.lang.Runnable")
++_Hooks = jclass("org.telegram.messenger.cabbit.CabbitHooks")
++_HookCallback = jclass("org.telegram.messenger.cabbit.CabbitHooks$Callback")
 +
 +__all__ = ["Plugin", "OutgoingMessage", "IncomingMessage", "header", "info", "switch", "text", "button",
-+           "toast", "send_text", "my_id", "account", "run_on_ui", "java", "log"]
++           "toast", "send_text", "my_id", "account", "run_on_ui", "java", "log",
++           "find_method", "find_constructor"]
 +
 +
 +class OutgoingMessage:
@@ -14026,6 +14394,12 @@ index 0000000..cdfa260
 +    def set(self, key, value):
 +        _api.setSetting(self.id, key, json.dumps(value))
 +
++    def hook(self, method, before=None, after=None):
++        """Перехват метода Telegram. before(p)/after(p) получают p с полями
++        p.thisObject, p.args, p.method и методами p.getResult(), p.setResult(v), p.callOriginal().
++        p.setResult() в before — оригинал не вызывается. Снимается сам при выключении плагина."""
++        return _Hooks.hook(self.id, method, _HookCb(before, after))
++
 +
 +def header(title):
 +    return {"type": "header", "title": title}
@@ -14077,6 +14451,30 @@ index 0000000..cdfa260
 +
 +def run_on_ui(fn):
 +    _api.runOnUi(_Task(fn))
++
++
++class _HookCb(dynamic_proxy(_HookCallback)):
++    def __init__(self, before, after):
++        super().__init__()
++        self._before = before
++        self._after = after
++
++    def before(self, p):
++        if self._before:
++            self._before(p)
++
++    def after(self, p):
++        if self._after:
++            self._after(p)
++
++
++def find_method(class_name, name, *param_types):
++    """find_method("org.telegram.ui.ChatActivity", "onResume") или с типами: ..., "int", "java.lang.String"."""
++    return _Hooks.findMethod(class_name, name, list(param_types) if param_types else None)
++
++
++def find_constructor(class_name, *param_types):
++    return _Hooks.findConstructor(class_name, list(param_types))
 +
 +
 +def java(class_name):
