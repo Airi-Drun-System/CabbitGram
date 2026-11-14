@@ -92,6 +92,35 @@ index 640e841..6e79137 100644
      }
    ],
    "configuration_version": "1"
+diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
+index a76770e..b344a0a 100644
+--- a/TMessagesProj/proguard-rules.pro
++++ b/TMessagesProj/proguard-rules.pro
+@@ -84,4 +84,7 @@
+ 
+ # Use -keep to explicitly keep any other classes shrinking would remove
+ #-dontoptimize
+-#-dontobfuscate
+\ No newline at end of file
++#-dontobfuscate
++# CabbitGram: плагины обращаются к классам Telegram по имени, поэтому имена не шифруем
++-dontobfuscate
++-keep class org.telegram.messenger.cabbit.** { *; }
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java b/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java
+index d59b29a..1f52381 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java
+@@ -4361,6 +4361,10 @@ public class AndroidUtilities {
+     }
+ 
+     public static boolean openForView(File f, String fileName, String mimeType, final Activity activity, Theme.ResourcesProvider resourcesProvider, boolean restrict) {
++        if (f != null && f.exists() && activity != null && org.telegram.messenger.cabbit.CabbitPlugins.isPluginFile(fileName)) {
++            org.telegram.messenger.cabbit.CabbitPlugins.promptInstall(activity, f);   // CabbitGram: установка плагина из чата
++            return true;
++        }
+         if (f != null && f.exists()) {
+             String realMimeType = null;
+             Intent intent = new Intent(Intent.ACTION_VIEW);
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java b/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
 index ca82181..a22448c 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
@@ -783,12 +812,739 @@ index 3a5413c..0c26247 100644
          final String value = getStringV2(key, res, fallback);
          if (value == null) {
              return "LOC_ERR:" + key;
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationCenter.java b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationCenter.java
+index 4f18f46..f0c21df 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationCenter.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationCenter.java
+@@ -314,6 +314,7 @@ public class NotificationCenter {
+     public static final int suggestedLangpack = totalEvents++;
+     public static final int didSetNewWallpapper = totalEvents++;
+     public static final int proxySettingsChanged = totalEvents++;
++    public static final int cabbitPluginsChanged = totalEvents++;
+     public static final int proxyCheckDone = totalEvents++;
+     public static final int proxyChangedByRotation = totalEvents++;
+     public static final int liveLocationsChanged = totalEvents++;
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index 55452d3..9c59c8a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -4439,6 +4439,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+     }
+ 
+     public void sendMessage(SendMessageParams sendMessageParams) {
++        if (org.telegram.messenger.cabbit.CabbitPlugins.onSendMessage(sendMessageParams)) return;   // CabbitGram: плагины
+         final SendMessageChatArguments sendMessageChatArguments = sendMessageParams.sendMessageChatArguments != null ?
+                 sendMessageParams.sendMessageChatArguments : SendMessageChatArguments.EMPTY;
+         String message = sendMessageParams.message;
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/CabbitPluginApi.java b/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/CabbitPluginApi.java
+new file mode 100644
+index 0000000..b6f6728
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/CabbitPluginApi.java
+@@ -0,0 +1,52 @@
++package org.telegram.messenger.cabbit;
++
++import android.app.Activity;
++import android.content.SharedPreferences;
++
++import org.telegram.messenger.AndroidUtilities;
++import org.telegram.messenger.ApplicationLoader;
++import org.telegram.messenger.FileLog;
++import org.telegram.messenger.SendMessagesHelper;
++import org.telegram.messenger.UserConfig;
++import org.telegram.ui.Components.BulletinFactory;
++
++// Функции, которые Python-модуль cabbit вызывает у приложения. Имена не меняются R8 (см. proguard-rules).
++public final class CabbitPluginApi {
++
++    private static SharedPreferences data() {
++        return ApplicationLoader.applicationContext.getSharedPreferences("cabbit_plugin_data", Activity.MODE_PRIVATE);
++    }
++
++    public static String getSetting(String pluginId, String key) {
++        return data().getString(pluginId + "/" + key, null);
++    }
++
++    public static void setSetting(String pluginId, String key, String json) {
++        data().edit().putString(pluginId + "/" + key, json).apply();
++    }
++
++    public static void toast(String text) {
++        AndroidUtilities.runOnUIThread(() -> BulletinFactory.global().createSimpleBulletin(org.telegram.messenger.R.raw.info, text).show());
++    }
++
++    public static void sendText(long dialogId, String text) {
++        final int account = UserConfig.selectedAccount;
++        AndroidUtilities.runOnUIThread(() -> SendMessagesHelper.getInstance(account).sendMessage(SendMessagesHelper.SendMessageParams.of(text, dialogId)));
++    }
++
++    public static int account() {
++        return UserConfig.selectedAccount;
++    }
++
++    public static long myId() {
++        return UserConfig.getInstance(UserConfig.selectedAccount).getClientUserId();
++    }
++
++    public static void runOnUi(Runnable r) {
++        AndroidUtilities.runOnUIThread(r);
++    }
++
++    public static void log(String text) {
++        FileLog.d("[plugin] " + text);
++    }
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/CabbitPlugins.java b/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/CabbitPlugins.java
+new file mode 100644
+index 0000000..5a32852
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/CabbitPlugins.java
+@@ -0,0 +1,339 @@
++package org.telegram.messenger.cabbit;
++
++import android.app.Activity;
++import android.content.SharedPreferences;
++import android.text.TextUtils;
++
++import org.json.JSONObject;
++import org.telegram.messenger.AndroidUtilities;
++import org.telegram.messenger.ApplicationLoader;
++import org.telegram.messenger.DispatchQueue;
++import org.telegram.messenger.FileLog;
++import org.telegram.messenger.MessageObject;
++import org.telegram.messenger.NotificationCenter;
++import org.telegram.messenger.SendMessagesHelper;
++import org.telegram.messenger.UserConfig;
++import org.telegram.ui.ActionBar.AlertDialog;
++import org.telegram.ui.Components.BulletinFactory;
++
++import java.io.File;
++import java.io.FileInputStream;
++import java.io.FileOutputStream;
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++
++// Менеджер плагинов CabbitGram: установка, включение, безопасный режим и хуки событий.
++public final class CabbitPlugins {
++
++    public static volatile PluginEngine engine;   // ставит модуль приложения при старте
++
++    public static final class Entry {
++        public String id, name, version, author, description, error;
++        public File file;
++        volatile Object instance;
++
++        public boolean isLoaded() { return instance != null; }
++    }
++
++    private static final LinkedHashMap<String, Entry> plugins = new LinkedHashMap<>();
++    private static final DispatchQueue queue = new DispatchQueue("cabbitPlugins");
++    private static boolean initialized;
++    public static boolean safeMode;
++    private static final long MAX_SIZE = 1024 * 1024;
++
++    private static SharedPreferences prefs() {
++        return ApplicationLoader.applicationContext.getSharedPreferences("cabbit_plugins", Activity.MODE_PRIVATE);
++    }
++
++    private static File dir() {
++        File d = new File(ApplicationLoader.getFilesDirFixed(), "plugins");
++        d.mkdirs();
++        return d;
++    }
++
++    public static boolean isEnabled(String id) { return prefs().getBoolean("enabled_" + id, true); }
++
++    public static ArrayList<Entry> list() {
++        synchronized (plugins) {
++            return new ArrayList<>(plugins.values());
++        }
++    }
++
++    public static Entry get(String id) {
++        synchronized (plugins) {
++            return plugins.get(id);
++        }
++    }
++
++    /** Один раз из главного экрана: читаем плагины и запускаем включённые. */
++    public static void init() {
++        if (initialized) return;
++        initialized = true;
++        // Безопасный режим: если приложение дважды подряд упало в первые 20 секунд — плагины не запускаем.
++        int boots = prefs().getInt("boots", 0);
++        if (boots >= 2) {
++            safeMode = true;
++            prefs().edit().putInt("boots", 0).commit();
++        } else {
++            prefs().edit().putInt("boots", boots + 1).commit();
++            AndroidUtilities.runOnUIThread(() -> prefs().edit().putInt("boots", 0).apply(), 20000);
++        }
++        for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
++            NotificationCenter.getInstance(a).addObserver(observer, NotificationCenter.didReceiveNewMessages);
++        }
++        queue.postRunnable(() -> {
++            File[] files = dir().listFiles((d, n) -> n.endsWith(".plugin"));
++            if (files == null) return;
++            for (File f : files) {
++                try {
++                    Entry e = readEntry(f);
++                    synchronized (plugins) { plugins.put(e.id, e); }
++                    if (!safeMode && isEnabled(e.id)) loadNow(e);
++                } catch (Exception ex) {
++                    FileLog.e(ex);
++                }
++            }
++            notifyChanged();
++        });
++    }
++
++    public static void exitSafeMode() {
++        safeMode = false;
++        queue.postRunnable(() -> {
++            for (Entry e : list()) if (isEnabled(e.id) && !e.isLoaded()) loadNow(e);
++            notifyChanged();
++        });
++    }
++
++    private static String read(File f) throws Exception {
++        if (f.length() > MAX_SIZE) throw new Exception("Файл плагина больше 1 МБ");
++        byte[] b = new byte[(int) f.length()];
++        try (FileInputStream in = new FileInputStream(f)) {
++            int off = 0, n;
++            while (off < b.length && (n = in.read(b, off, b.length - off)) > 0) off += n;
++        }
++        return new String(b, "UTF-8");
++    }
++
++    private static Entry readEntry(File f) throws Exception {
++        PluginEngine en = engine;
++        if (en == null) throw new Exception("Движок плагинов недоступен");
++        JSONObject meta = new JSONObject(en.inspect(read(f)));
++        Entry e = new Entry();
++        e.id = meta.optString("id");
++        if (!e.id.matches("[a-zA-Z0-9_.\\-]{2,64}")) throw new Exception("Неверный id плагина: " + e.id);
++        e.name = meta.optString("name", e.id);
++        e.version = meta.optString("version", "1.0");
++        e.author = meta.optString("author", "");
++        e.description = meta.optString("description", "");
++        e.file = f;
++        return e;
++    }
++
++    private static void loadNow(Entry e) {
++        try {
++            e.instance = engine.load(e.id, read(e.file));
++            e.error = null;
++        } catch (Throwable t) {
++            FileLog.e(t);
++            e.instance = null;
++            e.error = shortError(t);
++        }
++    }
++
++    private static void unloadNow(Entry e) {
++        Object inst = e.instance;
++        e.instance = null;
++        if (inst != null) {
++            try { engine.unload(inst); } catch (Throwable t) { FileLog.e(t); }
++        }
++    }
++
++    private static String shortError(Throwable t) {
++        String m = t.getMessage();
++        if (m == null) m = t.getClass().getSimpleName();
++        String[] lines = m.trim().split("\n");
++        return lines[lines.length - 1];   // у Python последняя строка — сама ошибка
++    }
++
++    public static void setEnabled(String id, boolean enabled) {
++        prefs().edit().putBoolean("enabled_" + id, enabled).apply();
++        queue.postRunnable(() -> {
++            Entry e = get(id);
++            if (e == null) return;
++            if (enabled && !safeMode && !e.isLoaded()) loadNow(e);
++            if (!enabled) unloadNow(e);
++            notifyChanged();
++        });
++    }
++
++    public static void delete(String id) {
++        queue.postRunnable(() -> {
++            Entry e;
++            synchronized (plugins) { e = plugins.remove(id); }
++            if (e == null) return;
++            unloadNow(e);
++            e.file.delete();
++            prefs().edit().remove("enabled_" + id).apply();
++            SharedPreferences data = ApplicationLoader.applicationContext.getSharedPreferences("cabbit_plugin_data", Activity.MODE_PRIVATE);
++            SharedPreferences.Editor ed = data.edit();
++            for (String k : data.getAll().keySet()) if (k.startsWith(id + "/")) ed.remove(k);
++            ed.apply();
++            notifyChanged();
++        });
++    }
++
++    private static void notifyChanged() {
++        AndroidUtilities.runOnUIThread(() -> NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.cabbitPluginsChanged));
++    }
++
++    // ---------- Установка из чата ----------
++    public static boolean isPluginFile(String fileName) {
++        return fileName != null && fileName.toLowerCase().endsWith(".plugin");
++    }
++
++    public static void promptInstall(Activity activity, File src) {
++        if (engine == null) {
++            BulletinFactory.global().createSimpleBulletin(org.telegram.messenger.R.raw.error, "Плагины недоступны в этой сборке").show();
++            return;
++        }
++        queue.postRunnable(() -> {
++            Entry info = null;
++            String err = null;
++            try {
++                info = readEntry(src);
++            } catch (Throwable t) {
++                FileLog.e(t);
++                err = shortError(t);
++            }
++            final Entry fi = info;
++            final String ferr = err;
++            AndroidUtilities.runOnUIThread(() -> {
++                if (activity.isFinishing()) return;
++                if (fi == null) {
++                    new AlertDialog.Builder(activity).setTitle("Не похоже на плагин").setMessage(ferr).setPositiveButton("ОК", null).show();
++                    return;
++                }
++                boolean update = get(fi.id) != null;
++                StringBuilder msg = new StringBuilder();
++                msg.append(fi.name).append(" ").append(fi.version);
++                if (!TextUtils.isEmpty(fi.author)) msg.append("\nАвтор: ").append(fi.author);
++                if (!TextUtils.isEmpty(fi.description)) msg.append("\n\n").append(fi.description);
++                msg.append("\n\nПлагин получает полный доступ к приложению и аккаунту. Ставь только от тех, кому доверяешь.");
++                new AlertDialog.Builder(activity)
++                        .setTitle(update ? "Обновить плагин?" : "Установить плагин?")
++                        .setMessage(msg.toString())
++                        .setPositiveButton(update ? "Обновить" : "Установить", (d, w) -> install(src, fi.id))
++                        .setNegativeButton("Отмена", null)
++                        .show();
++            });
++        });
++    }
++
++    private static void install(File src, String id) {
++        queue.postRunnable(() -> {
++            String result;
++            try {
++                Entry old = get(id);
++                if (old != null) unloadNow(old);
++                File dst = new File(dir(), id + ".plugin");
++                try (FileInputStream in = new FileInputStream(src); FileOutputStream out = new FileOutputStream(dst)) {
++                    byte[] b = new byte[16384];
++                    int n;
++                    while ((n = in.read(b)) > 0) out.write(b, 0, n);
++                }
++                Entry e = readEntry(dst);
++                synchronized (plugins) { plugins.put(e.id, e); }
++                prefs().edit().putBoolean("enabled_" + e.id, true).apply();
++                if (!safeMode) loadNow(e);
++                result = e.error == null ? "Плагин «" + e.name + "» установлен" : "Установлен, но не запустился: " + e.error;
++            } catch (Throwable t) {
++                FileLog.e(t);
++                result = "Не удалось установить: " + shortError(t);
++            }
++            final String r = result;
++            notifyChanged();
++            AndroidUtilities.runOnUIThread(() -> BulletinFactory.global().createSimpleBulletin(org.telegram.messenger.R.raw.info, r).show());
++        });
++    }
++
++    // ---------- Хуки ----------
++    /** Перед отправкой текста. true — отправку отменил плагин. Может поменять текст. */
++    public static boolean onSendMessage(SendMessagesHelper.SendMessageParams p) {
++        if (p == null || TextUtils.isEmpty(p.message) || plugins.isEmpty()) return false;
++        for (Entry e : list()) {
++            Object inst = e.instance;
++            if (inst == null) continue;
++            try {
++                JSONObject arg = new JSONObject().put("text", p.message).put("dialog_id", p.peer);
++                String res = engine.event(inst, "on_send_message", arg.toString());
++                if (res == null) continue;
++                JSONObject r = new JSONObject(res);
++                if (r.optBoolean("cancel")) return true;
++                if (r.has("text")) p.message = r.getString("text");
++            } catch (Throwable t) {
++                FileLog.e(t);
++                e.error = shortError(t);
++            }
++        }
++        return TextUtils.isEmpty(p.message);
++    }
++
++    private static final NotificationCenter.NotificationCenterDelegate observer = (id, account, args) -> {
++        if (id != NotificationCenter.didReceiveNewMessages || plugins.isEmpty()) return;
++        if (args.length > 2 && args[2] instanceof Boolean && (Boolean) args[2]) return;   // отложенные не трогаем
++        @SuppressWarnings("unchecked") ArrayList<MessageObject> msgs = (ArrayList<MessageObject>) args[1];
++        final ArrayList<String> payload = new ArrayList<>();
++        for (MessageObject m : msgs) {
++            try {
++                payload.add(new JSONObject()
++                        .put("id", m.getId())
++                        .put("dialog_id", m.getDialogId())
++                        .put("from_id", m.getSenderId())
++                        .put("out", m.isOut())
++                        .put("text", m.messageText == null ? "" : m.messageText.toString())
++                        .put("account", account).toString());
++            } catch (Exception ignore) {
++            }
++        }
++        queue.postRunnable(() -> {
++            for (Entry e : list()) {
++                Object inst = e.instance;
++                if (inst == null) continue;
++                for (String p : payload) {
++                    try {
++                        engine.event(inst, "on_new_message", p);
++                    } catch (Throwable t) {
++                        FileLog.e(t);
++                        e.error = shortError(t);
++                    }
++                }
++            }
++        });
++    };
++
++    // ---------- Настройки плагина ----------
++    public static String settingsJson(Entry e) {
++        if (e == null || e.instance == null) return "[]";
++        try {
++            return engine.settings(e.instance);
++        } catch (Throwable t) {
++            FileLog.e(t);
++            e.error = shortError(t);
++            return "[]";
++        }
++    }
++
++    public static void pluginEvent(Entry e, String name, String argJson) {
++        if (e == null || e.instance == null) return;
++        queue.postRunnable(() -> {
++            try {
++                engine.event(e.instance, name, argJson);
++            } catch (Throwable t) {
++                FileLog.e(t);
++                e.error = shortError(t);
++                AndroidUtilities.runOnUIThread(() -> BulletinFactory.global().createSimpleBulletin(org.telegram.messenger.R.raw.error, e.name + ": " + e.error).show());
++            }
++        });
++    }
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/PluginEngine.java b/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/PluginEngine.java
+new file mode 100644
+index 0000000..e2426f1
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/cabbit/PluginEngine.java
+@@ -0,0 +1,19 @@
++package org.telegram.messenger.cabbit;
++
++// Мост к движку плагинов (Python живёт в модуле приложения, Telegram-код его не знает напрямую).
++// Все данные туда-обратно ходят строками JSON, чтобы мост был тонким.
++public interface PluginEngine {
++    /** Метаданные из __plugin__ = {...} без запуска кода плагина. */
++    String inspect(String source) throws Exception;
++
++    /** Запускает плагин и возвращает его экземпляр. */
++    Object load(String id, String source) throws Exception;
++
++    void unload(Object plugin) throws Exception;
++
++    /** Событие плагину. Возвращает JSON-ответ или null. */
++    String event(Object plugin, String name, String argJson) throws Exception;
++
++    /** Описание настроек плагина: JSON-массив. */
++    String settings(Object plugin) throws Exception;
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/CabbitPluginActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/CabbitPluginActivity.java
+new file mode 100644
+index 0000000..f95c6e7
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/ui/CabbitPluginActivity.java
+@@ -0,0 +1,181 @@
++package org.telegram.ui;
++
++import android.text.TextUtils;
++import android.util.TypedValue;
++import android.view.View;
++
++import org.json.JSONArray;
++import org.json.JSONObject;
++import org.telegram.messenger.AndroidUtilities;
++import org.telegram.messenger.NotificationCenter;
++import org.telegram.messenger.cabbit.CabbitPluginApi;
++import org.telegram.messenger.cabbit.CabbitPlugins;
++import org.telegram.ui.ActionBar.AlertDialog;
++import org.telegram.ui.ActionBar.Theme;
++import org.telegram.ui.Cells.TextCheckCell;
++import org.telegram.ui.Components.EditTextBoldCursor;
++import org.telegram.ui.Components.UItem;
++import org.telegram.ui.Components.UniversalAdapter;
++import org.telegram.ui.Components.UniversalFragment;
++
++import java.util.ArrayList;
++
++// CabbitGram: экран одного плагина — вкл/выкл, его настройки, удаление
++public class CabbitPluginActivity extends UniversalFragment implements NotificationCenter.NotificationCenterDelegate {
++
++    private static final int ID_ENABLED = 1, ID_DELETE = 2, ID_BASE = 1000;
++    private final String pluginId;
++    private final ArrayList<JSONObject> settings = new ArrayList<>();
++
++    public CabbitPluginActivity(String pluginId) {
++        this.pluginId = pluginId;
++    }
++
++    @Override
++    public boolean onFragmentCreate() {
++        NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.cabbitPluginsChanged);
++        return super.onFragmentCreate();
++    }
++
++    @Override
++    public void onFragmentDestroy() {
++        NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.cabbitPluginsChanged);
++        super.onFragmentDestroy();
++    }
++
++    @Override
++    public void didReceivedNotification(int id, int account, Object... args) {
++        if (id != NotificationCenter.cabbitPluginsChanged) return;
++        if (CabbitPlugins.get(pluginId) == null) finishFragment();
++        else if (listView != null) listView.adapter.update(true);
++    }
++
++    @Override
++    protected CharSequence getTitle() {
++        CabbitPlugins.Entry e = CabbitPlugins.get(pluginId);
++        return e != null ? e.name : "Плагин";
++    }
++
++    private String value(JSONObject s) {
++        String v = CabbitPluginApi.getSetting(pluginId, s.optString("key"));
++        return v;   // JSON-строка или null
++    }
++
++    @Override
++    protected void fillItems(ArrayList<UItem> items, UniversalAdapter adapter) {
++        CabbitPlugins.Entry e = CabbitPlugins.get(pluginId);
++        if (e == null) return;
++        items.add(UItem.asCheck(ID_ENABLED, "Включён").setChecked(CabbitPlugins.isEnabled(pluginId)));
++        StringBuilder info = new StringBuilder();
++        info.append("Версия ").append(e.version);
++        if (!TextUtils.isEmpty(e.author)) info.append(" · ").append(e.author);
++        if (!TextUtils.isEmpty(e.description)) info.append("\n").append(e.description);
++        if (e.error != null) info.append("\n\nОшибка: ").append(e.error);
++        items.add(UItem.asShadow(info.toString()));
++
++        settings.clear();
++        try {
++            JSONArray arr = new JSONArray(CabbitPlugins.settingsJson(e));
++            for (int i = 0; i < arr.length(); i++) settings.add(arr.getJSONObject(i));
++        } catch (Exception ignore) {
++        }
++        for (int i = 0; i < settings.size(); i++) {
++            JSONObject s = settings.get(i);
++            String type = s.optString("type"), title = s.optString("title");
++            switch (type) {
++                case "header":
++                    items.add(UItem.asHeader(title));
++                    break;
++                case "info":
++                    items.add(UItem.asShadow(s.optString("text")));
++                    break;
++                case "switch": {
++                    String v = value(s);
++                    boolean on = v != null ? "true".equals(v) : s.optBoolean("default");
++                    items.add(UItem.asCheck(ID_BASE + i, title).setChecked(on));
++                    break;
++                }
++                case "text": {
++                    String v = value(s);
++                    String shown = s.optString("default");
++                    try { if (v != null) shown = new JSONArray("[" + v + "]").getString(0); } catch (Exception ignore) {}
++                    items.add(UItem.asButton(ID_BASE + i, title, shown));
++                    break;
++                }
++                case "button":
++                    items.add(UItem.asButton(ID_BASE + i, title).accent());
++                    break;
++            }
++        }
++        items.add(UItem.asShadow(null));
++        items.add(UItem.asButton(ID_DELETE, "Удалить плагин").red());
++    }
++
++    @Override
++    protected void onClick(UItem item, View view, int position, float x, float y) {
++        CabbitPlugins.Entry e = CabbitPlugins.get(pluginId);
++        if (e == null) return;
++        if (item.id == ID_ENABLED) {
++            boolean v = !CabbitPlugins.isEnabled(pluginId);
++            CabbitPlugins.setEnabled(pluginId, v);
++            if (view instanceof TextCheckCell) ((TextCheckCell) view).setChecked(v);
++        } else if (item.id == ID_DELETE) {
++            new AlertDialog.Builder(getParentActivity())
++                    .setTitle("Удалить плагин?")
++                    .setMessage(e.name + " и его настройки будут удалены.")
++                    .setPositiveButton("Удалить", (d, w) -> CabbitPlugins.delete(pluginId))
++                    .setNegativeButton("Отмена", null)
++                    .show();
++        } else if (item.id >= ID_BASE && item.id - ID_BASE < settings.size()) {
++            JSONObject s = settings.get(item.id - ID_BASE);
++            String key = s.optString("key");
++            switch (s.optString("type")) {
++                case "switch": {
++                    String v = value(s);
++                    boolean on = !(v != null ? "true".equals(v) : s.optBoolean("default"));
++                    CabbitPluginApi.setSetting(pluginId, key, on ? "true" : "false");
++                    if (view instanceof TextCheckCell) ((TextCheckCell) view).setChecked(on);
++                    CabbitPlugins.pluginEvent(e, "_setting_changed", JSONObject.quote(key));
++                    break;
++                }
++                case "text":
++                    editText(e, s);
++                    break;
++                case "button":
++                    CabbitPlugins.pluginEvent(e, "_button", JSONObject.quote(key));
++                    break;
++            }
++        }
++    }
++
++    private void editText(CabbitPlugins.Entry e, JSONObject s) {
++        if (getParentActivity() == null) return;
++        String key = s.optString("key");
++        EditTextBoldCursor et = new EditTextBoldCursor(getParentActivity());
++        et.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
++        et.setTextColor(Theme.getColor(Theme.key_dialogTextBlack));
++        et.setHintTextColor(Theme.getColor(Theme.key_dialogTextHint));
++        et.setHint(s.optString("hint"));
++        String v = value(s);
++        String cur = s.optString("default");
++        try { if (v != null) cur = new JSONArray("[" + v + "]").getString(0); } catch (Exception ignore) {}
++        et.setText(cur);
++        et.setSelection(et.length());
++        et.setPadding(AndroidUtilities.dp(24), AndroidUtilities.dp(8), AndroidUtilities.dp(24), AndroidUtilities.dp(8));
++        new AlertDialog.Builder(getParentActivity())
++                .setTitle(s.optString("title"))
++                .setView(et)
++                .setPositiveButton("Сохранить", (d, w) -> {
++                    CabbitPluginApi.setSetting(pluginId, key, JSONObject.quote(et.getText().toString()));
++                    CabbitPlugins.pluginEvent(e, "_setting_changed", JSONObject.quote(key));
++                    listView.adapter.update(true);
++                })
++                .setNegativeButton("Отмена", null)
++                .show();
++    }
++
++    @Override
++    protected boolean onLongClick(UItem item, View view, int position, float x, float y) {
++        return false;
++    }
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/CabbitPluginsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/CabbitPluginsActivity.java
+new file mode 100644
+index 0000000..9d3081b
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/ui/CabbitPluginsActivity.java
+@@ -0,0 +1,82 @@
++package org.telegram.ui;
++
++import android.text.TextUtils;
++import android.view.View;
++
++import org.telegram.messenger.NotificationCenter;
++import org.telegram.messenger.cabbit.CabbitPlugins;
++import org.telegram.ui.Components.UItem;
++import org.telegram.ui.Components.UniversalAdapter;
++import org.telegram.ui.Components.UniversalFragment;
++
++import java.util.ArrayList;
++
++// CabbitGram: список установленных плагинов
++public class CabbitPluginsActivity extends UniversalFragment implements NotificationCenter.NotificationCenterDelegate {
++
++    private static final int ID_SAFE = 1, ID_BASE = 1000;
++    private ArrayList<CabbitPlugins.Entry> entries = new ArrayList<>();
++
++    @Override
++    public boolean onFragmentCreate() {
++        NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.cabbitPluginsChanged);
++        return super.onFragmentCreate();
++    }
++
++    @Override
++    public void onFragmentDestroy() {
++        NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.cabbitPluginsChanged);
++        super.onFragmentDestroy();
++    }
++
++    @Override
++    public void didReceivedNotification(int id, int account, Object... args) {
++        if (id == NotificationCenter.cabbitPluginsChanged && listView != null) listView.adapter.update(true);
++    }
++
++    @Override
++    protected CharSequence getTitle() {
++        return "Плагины";
++    }
++
++    @Override
++    protected void fillItems(ArrayList<UItem> items, UniversalAdapter adapter) {
++        if (CabbitPlugins.safeMode) {
++            items.add(UItem.asShadow("Безопасный режим: приложение падало при запуске, поэтому плагины отключены."));
++            items.add(UItem.asButton(ID_SAFE, "Включить плагины снова").accent());
++        }
++        entries = CabbitPlugins.list();
++        if (CabbitPlugins.engine == null) {
++            items.add(UItem.asShadow("Плагины недоступны в этой сборке."));
++            return;
++        }
++        if (!entries.isEmpty()) items.add(UItem.asHeader("Установленные"));
++        for (int i = 0; i < entries.size(); i++) {
++            CabbitPlugins.Entry e = entries.get(i);
++            String status;
++            if (!CabbitPlugins.isEnabled(e.id)) status = "выключен";
++            else if (e.error != null) status = "ошибка";
++            else if (e.isLoaded()) status = "работает";
++            else status = "не запущен";
++            items.add(UItem.asButton(ID_BASE + i, e.name + "  " + e.version, status));
++        }
++        items.add(UItem.asShadow(entries.isEmpty()
++                ? "Плагинов пока нет. Чтобы установить, открой файл .plugin в любом чате."
++                : "Чтобы установить ещё, открой файл .plugin в любом чате."));
++    }
++
++    @Override
++    protected void onClick(UItem item, View view, int position, float x, float y) {
++        if (item.id == ID_SAFE) {
++            CabbitPlugins.exitSafeMode();
++            listView.adapter.update(true);
++        } else if (item.id >= ID_BASE && item.id - ID_BASE < entries.size()) {
++            presentFragment(new CabbitPluginActivity(entries.get(item.id - ID_BASE).id));
++        }
++    }
++
++    @Override
++    protected boolean onLongClick(UItem item, View view, int position, float x, float y) {
++        return false;
++    }
++}
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/CabbitSettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/CabbitSettingsActivity.java
 new file mode 100644
-index 0000000..52f67bc
+index 0000000..b89686b
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/CabbitSettingsActivity.java
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,214 @@
 +package org.telegram.ui;
 +
 +import android.text.InputType;
@@ -819,7 +1575,7 @@ index 0000000..52f67bc
 +
 +    private static final int ID_REFRESH = 1, ID_PROXY = 2, ID_PROXY_OFF = 3, ID_ROTATION = 4, ID_HIDE_MONEY = 5,
 +            ID_HIDE_STORIES = 6, ID_HIDE_PHONE = 7, ID_SYS_FONT = 8, ID_AUTO_UPDATE = 9, ID_CHECK_UPDATE = 10,
-+            ID_COPY_ID = 11, ID_SELF_BADGE = 12, ID_ADMIN_OFF = 13, ID_HEADER = 14;
++            ID_COPY_ID = 11, ID_SELF_BADGE = 12, ID_ADMIN_OFF = 13, ID_HEADER = 14, ID_PLUGINS = 15;
 +    private boolean proxyBusy;
 +    private String proxyStatus, updateStatus;
 +
@@ -830,6 +1586,8 @@ index 0000000..52f67bc
 +
 +    @Override
 +    protected void fillItems(ArrayList<UItem> items, UniversalAdapter adapter) {
++        items.add(UItem.asButton(ID_PLUGINS, "Плагины", String.valueOf(org.telegram.messenger.cabbit.CabbitPlugins.list().size())).accent());
++        items.add(UItem.asShadow(null));
 +        items.add(UItem.asHeader("Плавность"));
 +        items.add(UItem.asCheck(ID_REFRESH, "Высокая частота обновления экрана").setChecked(CabbitConfig.highRefresh()));
 +        items.add(UItem.asShadow("Повышает плавность интерфейса, но увеличивает расход батареи."));
@@ -884,6 +1642,9 @@ index 0000000..52f67bc
 +                SharedConfig.proxyRotationEnabled = !SharedConfig.proxyRotationEnabled;
 +                SharedConfig.saveConfig();
 +                toggle(view, SharedConfig.proxyRotationEnabled);
++                break;
++            case ID_PLUGINS:
++                presentFragment(new CabbitPluginsActivity());
 +                break;
 +            case ID_HEADER:
 +                showHeaderDialog();
@@ -1083,15 +1844,16 @@ index e6478ee..07b1b01 100644
              }
              if (folderId == 0) {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
-index 1dd2ffe..f642ab9 100644
+index 1dd2ffe..439759d 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
-@@ -7209,6 +7209,8 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+@@ -7209,6 +7209,9 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
      @Override
      protected void onResume() {
          super.onResume();
 +        org.telegram.messenger.CabbitConfig.applyRefreshRate(this);   // CabbitGram: максимальная частота экрана
 +        org.telegram.messenger.CabbitUpdater.checkOnStart(this);
++        org.telegram.messenger.cabbit.CabbitPlugins.init();
          WidgetMedia.onAppPaused(false);
          isResumed = true;
          PipCoordinator.getInstance().onActivityResume(this);
@@ -12949,10 +13711,17 @@ index e4f8cf6..1399e78 100644
      <string name="English">English</string>
      <string name="LanguageNameInEnglish">English</string>
 diff --git a/TMessagesProj_App/build.gradle b/TMessagesProj_App/build.gradle
-index daff205..df23ef3 100644
+index daff205..3476739 100644
 --- a/TMessagesProj_App/build.gradle
 +++ b/TMessagesProj_App/build.gradle
-@@ -55,10 +55,19 @@ android {
+@@ -1,5 +1,6 @@
+ apply plugin: 'com.android.application'
+ apply plugin: 'org.telegram.build-app-plugin'
++apply plugin: 'com.chaquo.python'   // CabbitGram: Python для плагинов
+ 
+ repositories {
+     mavenCentral()
+@@ -55,10 +56,19 @@ android {
          }
  
          release {
@@ -12976,7 +13745,7 @@ index daff205..df23ef3 100644
          }
      }
  
-@@ -131,7 +140,7 @@ android {
+@@ -131,7 +141,7 @@ android {
          }
          afat {
              ndk {
@@ -12985,6 +13754,29 @@ index daff205..df23ef3 100644
              }
              sourceSets.debug {
                  manifest.srcFile '../TMessagesProj/config/debug/AndroidManifest_SDK23.xml'
+@@ -166,7 +176,7 @@ android {
+     }
+ 
+     defaultConfig {
+-        minSdkVersion 23
++        minSdkVersion 24   // CabbitGram: Python (Chaquopy) требует Android 7+
+         targetSdkVersion 36
+         versionName APP_VERSION_NAME
+         ndkVersion "27.2.12479018"
+@@ -195,3 +205,13 @@ android {
+ }
+ 
+ apply plugin: 'com.google.gms.google-services'
++
++// CabbitGram: Python-движок плагинов
++chaquopy {
++    defaultConfig {
++        version = "3.12"
++        pyc {
++            src = false   // не нужен Python на машине сборки
++        }
++    }
++}
 diff --git a/TMessagesProj_App/google-services.json b/TMessagesProj_App/google-services.json
 index 640e841..6e79137 100644
 --- a/TMessagesProj_App/google-services.json
@@ -13054,6 +13846,322 @@ index 640e841..6e79137 100644
      }
    ],
    "configuration_version": "1"
+diff --git a/TMessagesProj_App/src/main/java/org/telegram/messenger/ApplicationLoaderImpl.java b/TMessagesProj_App/src/main/java/org/telegram/messenger/ApplicationLoaderImpl.java
+index 7b80edf..e63f805 100644
+--- a/TMessagesProj_App/src/main/java/org/telegram/messenger/ApplicationLoaderImpl.java
++++ b/TMessagesProj_App/src/main/java/org/telegram/messenger/ApplicationLoaderImpl.java
+@@ -3,6 +3,12 @@ package org.telegram.messenger;
+ import org.telegram.messenger.regular.BuildConfig;
+ 
+ public class ApplicationLoaderImpl extends ApplicationLoader {
++    @Override
++    public void onCreate() {
++        org.telegram.messenger.cabbit.CabbitPlugins.engine = new CabbitPythonEngine(this);   // CabbitGram: плагины
++        super.onCreate();
++    }
++
+     @Override
+     protected String onGetApplicationId() {
+         return BuildConfig.APPLICATION_ID;
+diff --git a/TMessagesProj_App/src/main/java/org/telegram/messenger/CabbitPythonEngine.java b/TMessagesProj_App/src/main/java/org/telegram/messenger/CabbitPythonEngine.java
+new file mode 100644
+index 0000000..388310d
+--- /dev/null
++++ b/TMessagesProj_App/src/main/java/org/telegram/messenger/CabbitPythonEngine.java
+@@ -0,0 +1,54 @@
++package org.telegram.messenger;
++
++import android.content.Context;
++
++import com.chaquo.python.PyObject;
++import com.chaquo.python.Python;
++import com.chaquo.python.android.AndroidPlatform;
++
++import org.telegram.messenger.cabbit.PluginEngine;
++
++// Python-движок плагинов CabbitGram (Chaquopy). Python запускается только когда нужен первый плагин.
++public class CabbitPythonEngine implements PluginEngine {
++
++    private final Context context;
++    private PyObject runtime;
++
++    public CabbitPythonEngine(Context context) {
++        this.context = context.getApplicationContext();
++    }
++
++    private synchronized PyObject rt() {
++        if (runtime == null) {
++            if (!Python.isStarted()) Python.start(new AndroidPlatform(context));
++            runtime = Python.getInstance().getModule("cabbit._runtime");
++        }
++        return runtime;
++    }
++
++    @Override
++    public String inspect(String source) {
++        return rt().callAttr("inspect", source).toString();
++    }
++
++    @Override
++    public Object load(String id, String source) {
++        return rt().callAttr("load", id, source);
++    }
++
++    @Override
++    public void unload(Object plugin) {
++        rt().callAttr("unload", plugin);
++    }
++
++    @Override
++    public String event(Object plugin, String name, String argJson) {
++        PyObject r = rt().callAttr("event", plugin, name, argJson);
++        return r == null ? null : r.toString();
++    }
++
++    @Override
++    public String settings(Object plugin) {
++        return rt().callAttr("settings", plugin).toString();
++    }
++}
+diff --git a/TMessagesProj_App/src/main/python/cabbit/__init__.py b/TMessagesProj_App/src/main/python/cabbit/__init__.py
+new file mode 100644
+index 0000000..cdfa260
+--- /dev/null
++++ b/TMessagesProj_App/src/main/python/cabbit/__init__.py
+@@ -0,0 +1,148 @@
++"""CabbitGram plugin API.
++
++Минимальный плагин:
++
++    from cabbit import Plugin, toast
++
++    __plugin__ = {"id": "hello", "name": "Привет", "version": "1.0", "author": "Vegas"}
++
++    class Hello(Plugin):
++        def on_load(self):
++            toast("Плагин запущен")
++"""
++import json
++
++from java import jclass, dynamic_proxy
++
++_api = jclass("org.telegram.messenger.cabbit.CabbitPluginApi")
++_Runnable = jclass("java.lang.Runnable")
++
++__all__ = ["Plugin", "OutgoingMessage", "IncomingMessage", "header", "info", "switch", "text", "button",
++           "toast", "send_text", "my_id", "account", "run_on_ui", "java", "log"]
++
++
++class OutgoingMessage:
++    """Сообщение перед отправкой. Можно поменять text или вызвать cancel()."""
++
++    def __init__(self, text, dialog_id):
++        self.text = text
++        self.dialog_id = dialog_id
++        self.cancelled = False
++
++    def cancel(self):
++        self.cancelled = True
++
++
++class IncomingMessage:
++    """Новое сообщение (входящее или своё с другого устройства). Только для чтения."""
++
++    def __init__(self, d):
++        self.id = d.get("id")
++        self.dialog_id = d.get("dialog_id")
++        self.from_id = d.get("from_id")
++        self.out = d.get("out", False)
++        self.text = d.get("text", "")
++        self.account = d.get("account", 0)
++
++
++class Plugin:
++    """Базовый класс. Переопредели нужные методы."""
++
++    id = None  # ставит загрузчик
++
++    def on_load(self):
++        pass
++
++    def on_unload(self):
++        pass
++
++    def on_send_message(self, msg):
++        """msg: OutgoingMessage. Верни False или вызови msg.cancel(), чтобы не отправлять."""
++        pass
++
++    def on_new_message(self, msg):
++        """msg: IncomingMessage. Вызывается в фоне, для UI используй run_on_ui()."""
++        pass
++
++    def on_setting_changed(self, key):
++        pass
++
++    def on_button(self, key):
++        pass
++
++    def settings(self):
++        """Список настроек: header(), info(), switch(), text(), button()."""
++        return []
++
++    def get(self, key, default=None):
++        v = _api.getSetting(self.id, key)
++        if v is None:
++            for s in self.settings():
++                if s.get("key") == key and "default" in s:
++                    return s["default"]
++            return default
++        return json.loads(v)
++
++    def set(self, key, value):
++        _api.setSetting(self.id, key, json.dumps(value))
++
++
++def header(title):
++    return {"type": "header", "title": title}
++
++
++def info(text):
++    return {"type": "info", "text": text}
++
++
++def switch(key, title, default=False):
++    return {"type": "switch", "key": key, "title": title, "default": bool(default)}
++
++
++def text(key, title, default="", hint=""):
++    return {"type": "text", "key": key, "title": title, "default": str(default), "hint": hint}
++
++
++def button(key, title):
++    return {"type": "button", "key": key, "title": title}
++
++
++def toast(message):
++    _api.toast(str(message))
++
++
++def send_text(dialog_id, message):
++    _api.sendText(int(dialog_id), str(message))
++
++
++def my_id():
++    return int(_api.myId())
++
++
++def account():
++    return int(_api.account())
++
++
++class _Task(dynamic_proxy(_Runnable)):
++    def __init__(self, fn):
++        super().__init__()
++        self.fn = fn
++
++    def run(self):
++        try:
++            self.fn()
++        except Exception as e:
++            log("run_on_ui:", repr(e))
++
++
++def run_on_ui(fn):
++    _api.runOnUi(_Task(fn))
++
++
++def java(class_name):
++    """Любой класс приложения или Android: java("org.telegram.messenger.UserConfig")."""
++    return jclass(class_name)
++
++
++def log(*parts):
++    _api.log(" ".join(str(p) for p in parts))
+diff --git a/TMessagesProj_App/src/main/python/cabbit/_runtime.py b/TMessagesProj_App/src/main/python/cabbit/_runtime.py
+new file mode 100644
+index 0000000..a8d9949
+--- /dev/null
++++ b/TMessagesProj_App/src/main/python/cabbit/_runtime.py
+@@ -0,0 +1,67 @@
++# Загрузчик плагинов. Вызывается из CabbitPythonEngine (Java).
++import ast
++import json
++import types
++
++import cabbit
++from cabbit import Plugin, OutgoingMessage, IncomingMessage
++
++
++def inspect(source):
++    tree = ast.parse(source)
++    for node in tree.body:
++        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__plugin__" for t in node.targets):
++            meta = ast.literal_eval(node.value)
++            if not isinstance(meta, dict) or "id" not in meta:
++                raise ValueError("__plugin__ должен быть словарём с полем id")
++            return json.dumps({str(k): str(v) for k, v in meta.items()})
++    raise ValueError("В файле нет __plugin__ = {...}")
++
++
++def load(plugin_id, source):
++    mod = types.ModuleType("cabbit_plugin_" + plugin_id.replace(".", "_").replace("-", "_"))
++    mod.__file__ = plugin_id + ".plugin"
++    exec(compile(source, plugin_id + ".plugin", "exec"), mod.__dict__)
++    cls = None
++    for v in mod.__dict__.values():
++        if isinstance(v, type) and issubclass(v, Plugin) and v is not Plugin:
++            cls = v
++    if cls is None:
++        raise ValueError("Не найден класс плагина: class ИмяПлагина(Plugin)")
++    inst = cls()
++    inst.id = plugin_id
++    inst.on_load()
++    return inst
++
++
++def unload(inst):
++    inst.on_unload()
++
++
++def event(inst, name, arg_json):
++    arg = json.loads(arg_json) if arg_json else None
++    if name == "on_send_message":
++        msg = OutgoingMessage(arg["text"], arg["dialog_id"])
++        if type(inst).on_send_message is Plugin.on_send_message:
++            return None
++        res = inst.on_send_message(msg)
++        if res is False or msg.cancelled:
++            return json.dumps({"cancel": True})
++        if msg.text != arg["text"]:
++            return json.dumps({"text": "" if msg.text is None else str(msg.text)})
++        return None
++    if name == "on_new_message":
++        if type(inst).on_new_message is not Plugin.on_new_message:
++            inst.on_new_message(IncomingMessage(arg))
++        return None
++    if name == "_setting_changed":
++        inst.on_setting_changed(arg)
++        return None
++    if name == "_button":
++        inst.on_button(arg)
++        return None
++    return None
++
++
++def settings(inst):
++    return json.dumps(list(inst.settings() or []))
+diff --git a/build.gradle b/build.gradle
+index e04698a..cd3dbd0 100644
+--- a/build.gradle
++++ b/build.gradle
+@@ -7,6 +7,7 @@ buildscript {
+     }
+     dependencies {
+         classpath 'com.android.tools.build:gradle:8.13.2'
++        classpath 'com.chaquo.python:gradle:17.0.0'
+         classpath 'com.google.gms:google-services:4.5.0'
+         classpath 'com.huawei.agconnect:agcp:1.9.1.301'
+         classpath 'com.google.firebase:firebase-crashlytics-gradle:3.0.8'
 diff --git a/gradle.properties b/gradle.properties
 index 17bb1dc..c6d3b1b 100644
 --- a/gradle.properties
