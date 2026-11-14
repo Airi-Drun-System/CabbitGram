@@ -1,0 +1,25 @@
+from cabbit import Plugin, toast, header, switch, text
+
+__plugin__ = {
+    "id": "caps",
+    "name": "Капс",
+    "version": "1.0",
+    "author": "Vegas",
+    "description": "Отправляет сообщения большими буквами",
+}
+
+
+class Caps(Plugin):
+    def on_load(self):
+        toast("Капс включён")
+
+    def settings(self):
+        return [
+            header("Капс"),
+            switch("enabled", "Писать большими буквами", True),
+            text("suffix", "Подпись в конце", ""),
+        ]
+
+    def on_send_message(self, msg):
+        if self.get("enabled"):
+            msg.text = msg.text.upper() + self.get("suffix")
